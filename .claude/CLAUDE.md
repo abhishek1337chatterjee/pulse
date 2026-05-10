@@ -7,7 +7,12 @@ fish + Plotly HTML dashboards. Self-hosted, no telemetry.
 
 - `claude-stats/{bin,fish,schema.sql}` — Claude Code usage analytics
 - `battery-stats/{bin,fish,systemd,schema.sql}` — battery + screen-state analytics
+- `fish/pulse-docs.fish` — top-level helper that opens `docs/index.html`
 - `install.sh` — idempotent: links bin/fish/systemd into `~/Documents/{claude,battery}-stats/`, `~/.config/fish/functions/`, `~/.config/systemd/user/`
+- `docs/` — internals docs site (hub + spoke). Open via `pulse-docs`.
+  - `index.html` (landing) → `claude-stats.html`, `battery-stats.html`, `internals.html`
+  - `_styles.css` and `_nav.js` are SHARED across spokes (single source of truth for theme + sidebar)
+  - When changing CLI commands, schema, pipelines, or schedule — update the relevant spoke
 - `docs/*.png` — dashboard screenshots used in README
 
 ## Live paths after install (DBs live outside repo)
@@ -27,7 +32,8 @@ fish + Plotly HTML dashboards. Self-hosted, no telemetry.
 - `battery-stats/bin/powertop-capture.sh` uses `${SUDO_ASKPASS:-$HOME/.local/bin/sudo-askpass}` — do not hardcode `/home/<user>/...`.
 - `battery-stats/bin/aggregate-daily.sh` derives `discharge_sessions` + `daily_battery`. Phantom-session filter (line 78): `duration > 60s AND energy_delta > 0.05 Wh` — needed because 1-sample sessions look like 0Wh drains.
 - All dashboards (`build-dashboard.sh` in both projects) emit self-contained HTML with Plotly via CDN; no build step. AMOLED theme: `#000000` bg, `#0a0a0a` panel, `#a78bfa` primary, `#22d3ee` secondary.
-- Fish CLIs both use the same help layout: `RECOMMENDED → REPORTS → DRILL-DOWN → MAINTENANCE → BACKGROUND`. Keep new subcommands grouped accordingly.
+- Fish CLIs are intentionally MINIMAL — `dashboard` is the only display surface. Keep them that way. No terminal-table reports. The dashboard is strictly more informative than any tabular CLI output, so don't re-add `summary` / `sot` / `worst` etc. The only exceptions: `claude-stats raw <SQL>` (debug escape hatch) and `battery-stats powertop-show` (powertop data isn't in the dashboard yet).
+- Help layout: `DASHBOARD → POWERTOP (battery only) → MAINTENANCE → BACKGROUND → DOCS`.
 
 ## Tests / verification
 

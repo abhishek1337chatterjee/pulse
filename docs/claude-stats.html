@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pulse · claude-stats internals</title>
+<link rel="stylesheet" href="_styles.css">
+</head>
+<body data-page="claude-stats">
+<div class="layout">
+    <nav class="toc" id="toc"></nav>
+
+    <main>
+
+    <section class="hero">
+        <h1>claude-stats</h1>
+        <p class="tagline">
+            Local Claude Code usage analytics. Pulls daily cost &amp; token
+            totals from <code>ccusage</code> and per-conversation detail by
+            walking <code>~/.claude/projects/**/*.jsonl</code>. Stores in a
+            single DuckDB file. Surfaces everything through one interactive
+            HTML dashboard.
+        </p>
+    </section>
+
+    <!-- ============ CLI ============ -->
+    <section id="cli">
+        <h2>CLI commands</h2>
+        <p class="lead">
+            Fish function at <code>~/.config/fish/functions/claude-stats.fish</code>.
+            All read-only against <code>~/Documents/claude-stats/claude.duckdb</code>
+            unless noted. Four subcommands plus help.
+        </p>
+
+        <h3>The display surface <span class="badge purple">interactive</span></h3>
+        <div class="cmd-table">
+            <div class="cmd-row">
+                <div class="cmd">claude-stats dashboard <span class="arg">[days=30]</span></div>
+                <div class="desc">
+                    <strong>The only display command.</strong> Calls
+                    <code>build-dashboard.sh</code> to regenerate
+                    <code>/tmp/claude-stats-dashboard.html</code>, then
+                    <code>xdg-open</code>s it. Plotly charts: cost stacked-by-model,
+                    daily token mix, cache hit rate, top tools, cost-by-model donut,
+                    top projects, context-window distribution. Pass <code>30</code> /
+                    <code>90</code> / <code>365</code> for different windows.
+                </div>
+            </div>
+        </div>
+
+        <h3>Maintenance <span class="badge subtle">non-display</span></h3>
+        <div class="cmd-table">
+            <div class="cmd-row">
+                <div class="cmd">claude-stats ingest <span class="arg">[SINCE]</span></div>
+                <div class="desc">
+                    Manual <code>ingest-daily.sh</code> trigger.
+                    <strong>SINCE</strong> = <code>YYYYMMDD</code>, default = 8 days
+                    ago. Idempotent UPSERT — safe to re-run.
+                </div>
+            </div>
+            <div class="cmd-row">
+                <div class="cmd">claude-stats ingest-sessions</div>
+                <div class="desc">
+                    Manual <code>ingest-sessions.py</code> trigger. Walks all JSONLs
+                    and refreshes the conversation/tool/project tables.
+                </div>
+            </div>
+            <div class="cmd-row">
+                <div class="cmd">claude-stats raw <span class="arg">&lt;SQL&gt;</span></div>
+                <div class="desc">
+                    <strong>Read+write</strong> SQL escape hatch. The only command
+                    that opens the DB without <code>-readonly</code>. Reserved for
+                    one-off debugging.
+                </div>
+            </div>
+        </div>
+
+        <div class="callout">
+            <div class="label">Removed in the slim-down</div>
+            Earlier versions had a dozen terminal-report subcommands
+            (<code>summary</code>, <code>month</code>, <code>year</code>,
+            <code>top</code>, <code>models</code>, <code>cache</code>,
+            <code>compaction</code>, <code>tools</code>, <code>repos</code>,
+            <code>sessions</code>). They were dropped — the dashboard
+            covers all of them with better visual density. If you need a
+            specific number for scripting, use <code>claude-stats raw "&lt;SQL&gt;"</code>.
+        </div>
+    </section>
+
+    <!-- ============ DAILY INGEST ============ -->
+    <section id="ingest-daily">
+        <h2>How <code>ingest-daily.sh</code> works</h2>
+        <p class="lead">
+            Pulls per-day cost &amp; token totals from <code>ccusage</code>
+            (Anthropic's open-source usage CLI), reshapes via <code>jq</code>,
+            UPSERTs into <code>daily_usage</code>. Runs nightly at 02:00 via
+            systemd timer.
+        </p>
+
+        <div class="flow">
+            <div class="box cyan"><div class="label">source</div>npx ccusage daily<br><span style="color:var(--fg-muted)">--since YYYYMMDD --json</span></div>
+            <div class="arrow">→</div>
+            <div class="box"><div class="label">reshape</div>jq → CSV<br><span style="color:var(--fg-muted)">flatten modelBreakdowns</span></div>
+            <div class="arrow">→</div>
+            <div class="box purple"><div class="label">load</div>DuckDB<br><span style="color:var(--fg-muted)">read_csv → INSERT OR REPLACE</span></div>
+            <div class="arrow">→</div>
+            <div class="box good"><div class="label">target</div>daily_usage<br><span style="color:var(--fg-muted)">PK: (date, model)</span></div>
+        </div>
+
+        <details>
+            <summary>The <code>jq</code> reshape (one row per day × model)</summary>
+            <pre><code><span class="tok-c"># ccusage emits nested JSON per day with .modelBreakdowns[]</span>
+<span class="tok-c"># jq flattens to one CSV row per (day, model)</span>
+.daily[] <span class="tok-k">as</span> $d
+| $d.modelBreakdowns[]
+| [
+    $d.date,
+    .modelName,
+    (.inputTokens // <span class="tok-n">0</span>),
+    (.outputTokens // <span class="tok-n">0</span>),
+    (.cacheCreationTokens // <span class="tok-n">0</span>),
+    (.cacheReadTokens // <span class="tok-n">0</span>),
+    (.cost // <span class="tok-n">0</span>)
+  ]
+| @csv</code></pre>
+        </details>
+
+        <details>
+            <summary>The DuckDB UPSERT (idempotent)</summary>
+            <pre><code><span class="tok-k">CREATE OR REPLACE TEMP TABLE</span> staging <span class="tok-k">AS</span>
+<span class="tok-k">SELECT</span> * <span class="tok-k">FROM</span> read_csv(<span class="tok-s">'$CSV'</span>,
+  header=<span class="tok-k">false</span>,
+  columns={
+    <span class="tok-s">'date'</span>: <span class="tok-s">'DATE'</span>,
+    <span class="tok-s">'model'</span>: <span class="tok-s">'VARCHAR'</span>,
+    <span class="tok-s">'input_tokens'</span>: <span class="tok-s">'BIGINT'</span>,
+    ...
+  });
+
+<span class="tok-k">INSERT OR REPLACE INTO</span> daily_usage
+SELECT date, model, input_tokens, output_tokens,
+       cache_creation_tokens, cache_read_tokens, cost,
+       <span class="tok-fn">CURRENT_TIMESTAMP</span>
+<span class="tok-k">FROM</span> staging;</code></pre>
+        </details>
+
+        <div class="callout warn">
+            <div class="label">Cron-safe PATH</div>
+            The script exports an explicit <code>PATH</code> at the top because
+            cron / systemd timers don't inherit your shell's PATH:
+            <code>~/.nvm/versions/node/v24.14.1/bin:/usr/bin:/bin:$PATH</code>.
+            Without this, <code>npx</code> isn't found and the ingest silently
+            fails. If you upgrade Node via nvm, update this path.
+        </div>
+    </section>
+
+    <!-- ============ SESSION INGEST ============ -->
+    <section id="ingest-sessions">
+        <h2>How <code>ingest-sessions.py</code> works</h2>
+        <p class="lead">
+            Walks every <code>.jsonl</code> conversation transcript under
+            <code>~/.claude/projects/</code>, parses message events &amp;
+            tool-use blocks, then UPSERTs into three tables. Also pulls
+            per-project cost totals from <code>ccusage session --json</code>.
+        </p>
+
+        <div class="flow">
+            <div class="box cyan"><div class="label">walk</div>~/.claude/projects/<br>**/*.jsonl</div>
+            <div class="arrow">→</div>
+            <div class="box"><div class="label">classify</div>main vs subagent<br><span style="color:var(--fg-muted)">by path depth</span></div>
+            <div class="arrow">→</div>
+            <div class="box"><div class="label">parse</div>per-line JSON<br><span style="color:var(--fg-muted)">count msgs, tools, ctx</span></div>
+            <div class="arrow">→</div>
+            <div class="box purple"><div class="label">stage</div>3 CSVs in /tmp<br><span style="color:var(--fg-muted)">conv / tools / projects</span></div>
+            <div class="arrow">→</div>
+            <div class="box good"><div class="label">load</div>DuckDB<br><span style="color:var(--fg-muted)">3× INSERT OR REPLACE</span></div>
+        </div>
+
+        <h3>Path classification</h3>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Two JSONL shapes exist under <code>~/.claude/projects/&lt;project&gt;/</code>:
+        </p>
+        <ul class="tight">
+            <li><strong>Main</strong>: <code>&lt;project&gt;/&lt;uuid&gt;.jsonl</code> → <code>kind = 'main'</code></li>
+            <li><strong>Subagent</strong>: <code>&lt;project&gt;/&lt;parent_uuid&gt;/subagents/&lt;agent-id&gt;.jsonl</code> → <code>kind = 'subagent'</code> with <code>parent_session_id</code> set</li>
+        </ul>
+
+        <h3>Per-line parse</h3>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Each JSONL line is a typed event. The parser tracks:
+        </p>
+        <ul class="tight">
+            <li><code>started_at</code> / <code>ended_at</code> = min/max <code>timestamp</code> across lines</li>
+            <li><code>cwd</code> / <code>gitBranch</code> = first non-null occurrence (sticky)</li>
+            <li><code>type=user</code> → increment <code>n_user_msgs</code></li>
+            <li><code>type=assistant</code> → increment <code>n_assistant_msgs</code>; track peak context (<code>input + cache_create + cache_read</code>); count tool-use blocks in <code>content[]</code></li>
+            <li><code>type=summary</code> → first one wins, capped at 500 chars</li>
+            <li>Files with zero user+assistant msgs are skipped</li>
+        </ul>
+
+        <h3>Storage</h3>
+        <ul class="tight">
+            <li><strong>conversations</strong> — one row per JSONL (PK: <code>session_id</code> = filename stem)</li>
+            <li><strong>conversation_tool_usage</strong> — one row per (session, tool); aggregated <code>call_count</code></li>
+            <li><strong>project_usage</strong> — populated from <code>ccusage session --json</code>, not the JSONLs (gives authoritative cost totals per project)</li>
+        </ul>
+
+        <div class="callout">
+            <div class="label">claude-clean hook</div>
+            Your <code>claude-clean</code> fish function runs <code>ingest-sessions.py</code>
+            <strong>before</strong> any per-project deletion, so transcripts that
+            are about to be wiped are still captured. The DuckDB
+            <code>conversations</code> table outlives the JSONL files.
+        </div>
+    </section>
+
+    <!-- ============ DASHBOARD BUILD ============ -->
+    <section id="dashboard">
+        <h2>How <code>build-dashboard.sh</code> works</h2>
+        <p class="lead">
+            Self-contained HTML generator. Runs ~8 DuckDB queries, embeds the
+            results as a JSON literal in the page, ships Plotly via CDN, and lets
+            the browser render everything client-side. No build step, no server.
+        </p>
+
+        <div class="flow">
+            <div class="box cyan"><div class="label">1. query</div>8× DuckDB<br><span style="color:var(--fg-muted)">-readonly -json</span></div>
+            <div class="arrow">→</div>
+            <div class="box"><div class="label">2. emit</div>HEREDOC HTML<br><span style="color:var(--fg-muted)">CSS + structure</span></div>
+            <div class="arrow">→</div>
+            <div class="box purple"><div class="label">3. inject</div>printf 'key: %s'<br><span style="color:var(--fg-muted)">JSON inline</span></div>
+            <div class="arrow">→</div>
+            <div class="box good"><div class="label">4. open</div>xdg-open<br><span style="color:var(--fg-muted)">Plotly renders</span></div>
+        </div>
+
+        <h3>The 8 queries embedded as <code>DATA</code></h3>
+        <div class="cmd-table">
+            <div class="cmd-row"><div class="cmd">stats</div><div class="desc">6 KPI numbers (total cost, active days, total tokens, cache hit %, main sessions, tool calls).</div></div>
+            <div class="cmd-row"><div class="cmd">dailyCost</div><div class="desc">Per (date × model) for the window — feeds the stacked-bar chart.</div></div>
+            <div class="cmd-row"><div class="cmd">dailyTokens</div><div class="desc">Per date: input / output / cache_create / cache_read — feeds the token mix stacked bar.</div></div>
+            <div class="cmd-row"><div class="cmd">byModel</div><div class="desc">Cost per model over the window — feeds the donut.</div></div>
+            <div class="cmd-row"><div class="cmd">cacheTrend</div><div class="desc">Cache hit % per date — feeds the spline + area chart.</div></div>
+            <div class="cmd-row"><div class="cmd">topTools</div><div class="desc">Top 15 tools by total calls, with session count.</div></div>
+            <div class="cmd-row"><div class="cmd">topRepos</div><div class="desc">Top 12 projects by total cost — feeds the horizontal bar.</div></div>
+            <div class="cmd-row"><div class="cmd">contextDist</div><div class="desc">Sessions bucketed by % of model context window used.</div></div>
+            <div class="cmd-row"><div class="cmd">sessions</div><div class="desc">Most recent 25 main sessions — feeds the bottom table.</div></div>
+        </div>
+
+        <h3>AMOLED theme</h3>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Color tokens used by both the dashboard and this docs site (single source
+            of truth in <code>docs/_styles.css</code>):
+        </p>
+        <pre><code><span class="tok-var">--bg</span>:        <span class="tok-s">#000000</span>   <span class="tok-c">/* true black for OLED panels */</span>
+<span class="tok-var">--panel</span>:     <span class="tok-s">#0a0a0a</span>   <span class="tok-c">/* card background */</span>
+<span class="tok-var">--primary</span>:   <span class="tok-s">#a78bfa</span>   <span class="tok-c">/* electric purple — opus, accents */</span>
+<span class="tok-var">--secondary</span>: <span class="tok-s">#22d3ee</span>   <span class="tok-c">/* cyan — sonnet, secondary accent */</span>
+<span class="tok-var">--good</span>:      <span class="tok-s">#22c55e</span>   <span class="tok-c">/* green — haiku, healthy state */</span>
+<span class="tok-var">--warn</span>:      <span class="tok-s">#f59e0b</span>   <span class="tok-c">/* amber */</span>
+<span class="tok-var">--bad</span>:       <span class="tok-s">#ef4444</span>   <span class="tok-c">/* red — compaction risk */</span>
+<span class="tok-var">--pink</span>:      <span class="tok-s">#ec4899</span>   <span class="tok-c">/* fourth distinct */</span></code></pre>
+
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Stable per-model coloring is done in JS via <code>colorForModel(m)</code>
+            — opus → primary, sonnet → secondary, haiku → good, others → warn.
+        </p>
+    </section>
+
+    <!-- ============ SCHEMA ============ -->
+    <section id="schema">
+        <h2>Schema</h2>
+        <p class="lead">
+            Four tables. Source-of-truth at
+            <code>~/Documents/pulse/claude-stats/schema.sql</code>. Re-applied
+            idempotently on each <code>install.sh</code> run (uses
+            <code>CREATE TABLE IF NOT EXISTS</code>).
+        </p>
+
+        <h3>daily_usage <span class="badge subtle">populated by ingest-daily.sh</span></h3>
+        <table class="schema">
+            <thead><tr><th>column</th><th>type</th><th>notes</th></tr></thead>
+            <tbody>
+                <tr><td class="col">date</td><td class="type">DATE</td><td class="note">Day of usage; PK component</td></tr>
+                <tr><td class="col">model</td><td class="type">VARCHAR</td><td class="note">e.g. <code>claude-opus-4-7</code>; PK component</td></tr>
+                <tr><td class="col">input_tokens</td><td class="type">BIGINT</td><td class="note">Uncached input tokens</td></tr>
+                <tr><td class="col">output_tokens</td><td class="type">BIGINT</td><td class="note">Generated tokens</td></tr>
+                <tr><td class="col">cache_creation_tokens</td><td class="type">BIGINT</td><td class="note">Tokens written to prompt cache</td></tr>
+                <tr><td class="col">cache_read_tokens</td><td class="type">BIGINT</td><td class="note">Tokens served from cache (cheap)</td></tr>
+                <tr><td class="col">cost</td><td class="type">DOUBLE</td><td class="note">USD, computed by ccusage</td></tr>
+                <tr><td class="col">ingested_at</td><td class="type">TIMESTAMP</td><td class="note">Last UPSERT time (UTC)</td></tr>
+            </tbody>
+        </table>
+
+        <h3>conversations <span class="badge subtle">one row per JSONL transcript</span></h3>
+        <table class="schema">
+            <thead><tr><th>column</th><th>type</th><th>notes</th></tr></thead>
+            <tbody>
+                <tr><td class="col">session_id</td><td class="type">VARCHAR</td><td class="note">PK; filename stem (UUID)</td></tr>
+                <tr><td class="col">project_path</td><td class="type">VARCHAR</td><td class="note">Slugified parent dir</td></tr>
+                <tr><td class="col">cwd</td><td class="type">VARCHAR</td><td class="note">First-seen CWD from JSONL events</td></tr>
+                <tr><td class="col">git_branch</td><td class="type">VARCHAR</td><td class="note">First-seen branch</td></tr>
+                <tr><td class="col">kind</td><td class="type">VARCHAR</td><td class="note"><code>'main'</code> or <code>'subagent'</code></td></tr>
+                <tr><td class="col">parent_session_id</td><td class="type">VARCHAR</td><td class="note">NULL for main; UUID for subagent</td></tr>
+                <tr><td class="col">started_at / ended_at</td><td class="type">TIMESTAMP</td><td class="note">UTC; min/max event timestamps</td></tr>
+                <tr><td class="col">n_user_msgs / n_assistant_msgs / n_tool_calls</td><td class="type">INTEGER</td><td class="note">Counts</td></tr>
+                <tr><td class="col">max_context_tokens</td><td class="type">BIGINT</td><td class="note">Peak context size seen in any assistant turn</td></tr>
+                <tr><td class="col">model</td><td class="type">VARCHAR</td><td class="note">Model in use at the peak-context turn</td></tr>
+                <tr><td class="col">summary</td><td class="type">VARCHAR</td><td class="note">First <code>type=summary</code> event, capped at 500 chars</td></tr>
+            </tbody>
+        </table>
+
+        <h3>conversation_tool_usage</h3>
+        <table class="schema">
+            <thead><tr><th>column</th><th>type</th><th>notes</th></tr></thead>
+            <tbody>
+                <tr><td class="col">session_id, tool_name</td><td class="type">VARCHAR</td><td class="note">Composite PK</td></tr>
+                <tr><td class="col">call_count</td><td class="type">INTEGER</td><td class="note">Total invocations of that tool in that session</td></tr>
+            </tbody>
+        </table>
+
+        <h3>project_usage <span class="badge subtle">from ccusage session --json</span></h3>
+        <table class="schema">
+            <thead><tr><th>column</th><th>type</th><th>notes</th></tr></thead>
+            <tbody>
+                <tr><td class="col">project_path</td><td class="type">VARCHAR</td><td class="note">PK; ccusage's <code>sessionId</code></td></tr>
+                <tr><td class="col">last_activity</td><td class="type">DATE</td><td class="note">Most recent activity date</td></tr>
+                <tr><td class="col">input/output/cache_*_tokens</td><td class="type">BIGINT</td><td class="note">Lifetime per-project totals</td></tr>
+                <tr><td class="col">total_cost</td><td class="type">DOUBLE</td><td class="note">USD over the project's lifetime</td></tr>
+                <tr><td class="col">models_used</td><td class="type">VARCHAR</td><td class="note">Comma-separated</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <footer>
+        ← <a href="index.html">overview</a> · next: <a href="battery-stats.html">battery-stats →</a>
+    </footer>
+
+    </main>
+</div>
+<script src="_nav.js"></script>
+</body>
+</html>

@@ -63,7 +63,7 @@ fi
 command -v gdbus    >/dev/null || warn "gdbus missing → screen state detection will be partial"
 command -v powertop >/dev/null || warn "powertop missing → 'battery-stats powertop' won't work"
 command -v zenity   >/dev/null || warn "zenity missing → sudo-askpass helper needs it"
-command -v gh       >/dev/null || warn "gh missing → git push to private repo will need a token"
+command -v gh       >/dev/null || warn "gh missing → only needed if you'll push contributions back"
 
 # ---------- step 2: DuckDB binary ----------
 say "2/9  DuckDB binary"
@@ -116,6 +116,7 @@ say "5/9  Linking fish functions"
 mkdir -p "$FISH_FUNCS"
 link "$REPO/claude-stats/fish/claude-stats.fish"   "$FISH_FUNCS/claude-stats.fish"
 link "$REPO/battery-stats/fish/battery-stats.fish" "$FISH_FUNCS/battery-stats.fish"
+link "$REPO/fish/pulse-docs.fish"                  "$FISH_FUNCS/pulse-docs.fish"
 
 # ---------- step 6: systemd timers (battery-stats + claude-stats) ----------
 say "6/9  Linking + enabling systemd user timers"

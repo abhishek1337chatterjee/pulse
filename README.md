@@ -26,10 +26,13 @@ accents) — easy on OLED panels, easy on the eyes.
 ```fish
 claude-stats dashboard          # last 30 days, opens in browser
 claude-stats dashboard 90       # last quarter
-claude-stats summary            # terminal table — last 7 days
-claude-stats repos              # top projects by cost
-claude-stats compaction         # context-window distribution
+claude-stats dashboard 365      # last year
 ```
+
+The dashboard is the surface — every metric is in there: cost stacked by
+model, daily token mix, cache hit rate, top tools, top projects,
+context-window distribution. No terminal-table fallbacks; the graphs say
+more in less space.
 
 ### battery-stats
 
@@ -37,11 +40,24 @@ claude-stats compaction         # context-window distribution
 
 ```fish
 battery-stats dashboard         # last 14 days, interactive HTML
-battery-stats now               # last 5 raw samples
-battery-stats sot               # daily Screen-On-Time + drain
-battery-stats worst             # top 10 highest-drain sessions
 battery-stats powertop 30       # capture 30s of top energy consumers
 ```
+
+Same idea: SOT, drain rate, charging bands, sessions, hourly heatmap,
+capacity decay — all in the dashboard.
+
+### Internals
+
+```fish
+pulse-docs                      # open docs/index.html in browser
+```
+
+A self-contained HTML page (no external deps beyond Plotly's CDN) that
+documents how every CLI subcommand and background pipeline works:
+ingestion paths, the schema, the SOT integration trick, the UTC→IST
+gotcha, the systemd timer migration. Lives at
+[`docs/index.html`](docs/index.html). Designed to be the place future-you
+goes to remember why something was done.
 
 ---
 
@@ -50,7 +66,11 @@ battery-stats powertop 30       # capture 30s of top energy consumers
 On a fresh laptop:
 
 ```bash
-git clone git@github.com:abhishek1337chatterjee/pulse.git ~/Documents/pulse
+# HTTPS (no auth needed for clone)
+git clone https://github.com/abhishek1337chatterjee/pulse.git ~/Documents/pulse
+# or SSH if you have a key
+# git clone git@github.com:abhishek1337chatterjee/pulse.git ~/Documents/pulse
+
 cd ~/Documents/pulse
 ./install.sh
 ```
@@ -95,7 +115,8 @@ battery-stats dashboard
 
 ~/.config/fish/functions/
 ├── claude-stats.fish          → symlink to repo
-└── battery-stats.fish         → symlink to repo
+├── battery-stats.fish         → symlink to repo
+└── pulse-docs.fish            → symlink to repo  (opens docs/index.html)
 
 ~/.config/systemd/user/
 ├── battery-stats-poll.service       → symlink to repo
@@ -121,7 +142,7 @@ aren't tracked in git.
 | `claude-stats/bin/ingest-sessions.py` | walks `~/.claude/projects/**/*.jsonl`, parses tool-use events + usage, writes `conversations`, `conversation_tool_usage`, `project_usage` |
 | `claude-stats/bin/cleanup-old.sh` | 365-day retention across all four tables |
 | `claude-stats/bin/build-dashboard.sh` | emits self-contained `/tmp/claude-stats-dashboard.html` (Plotly via CDN, AMOLED theme) |
-| `claude-stats/fish/claude-stats.fish` | CLI wrapper: `summary`, `month`, `year`, `top`, `models`, `cache`, `tools`, `repos`, `sessions`, `compaction`, `dashboard`, `ingest`, `ingest-sessions`, `raw <SQL>` |
+| `claude-stats/fish/claude-stats.fish` | CLI wrapper: `dashboard` (interactive HTML), `ingest`, `ingest-sessions`, `raw <SQL>` (debug-only escape hatch) |
 
 Schedule: **systemd user timer** `claude-stats-ingest.timer` runs nightly
 at 02:00 (with `Persistent=true`, so missed runs from off/asleep nights
@@ -139,7 +160,7 @@ capture conversation metadata before the JSONLs are deleted.
 | `battery-stats/bin/powertop-capture.sh` | manual `sudo -A powertop --csv ...` run; parses Top 10 Power Consumers; uses `SUDO_ASKPASS=$HOME/.local/bin/sudo-askpass` (zenity GUI prompt) |
 | `battery-stats/bin/cleanup-old.sh` | 90-day retention on raw samples (configurable: `BATTERY_STATS_RETENTION_DAYS=…`); `daily_battery` + `discharge_sessions` kept indefinitely (tiny) |
 | `battery-stats/bin/build-dashboard.sh` | emits `/tmp/battery-stats-dashboard.html` |
-| `battery-stats/fish/battery-stats.fish` | CLI wrapper |
+| `battery-stats/fish/battery-stats.fish` | CLI wrapper: `dashboard`, `powertop` / `powertop-show`, `ingest`, `aggregate`, `poll` |
 
 Schedule: **systemd user timers** — poll every 5 min, aggregate nightly 03:15.
 

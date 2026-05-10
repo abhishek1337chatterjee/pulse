@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pulse — internals</title>
+<link rel="stylesheet" href="_styles.css">
+</head>
+<body data-page="home">
+<div class="layout">
+    <nav class="toc" id="toc"></nav>
+
+    <main>
+
+    <section class="hero" id="overview">
+        <h1>pulse — internals</h1>
+        <p class="tagline">
+            Two local analytics CLIs that turn your laptop into a quantified-self
+            setup — no cloud, no telemetry, no subscriptions. This site documents
+            how every piece works, so future-you can debug, extend, or rebuild
+            it from scratch.
+        </p>
+
+        <div class="cards-2">
+            <a class="proj-card" href="claude-stats.html">
+                <h3><span class="accent">●</span> claude-stats →</h3>
+                <p class="desc">
+                    Where your Claude Code spend goes. Cost by model, cache hit-rate,
+                    top tools, top projects, context-window pressure.
+                </p>
+                <div class="meta">
+                    <span>4 DuckDB tables</span><span>4 fish subcommands</span><span>nightly 02:00 ingest</span>
+                </div>
+            </a>
+            <a class="proj-card" href="battery-stats.html">
+                <h3><span class="accent cyan">●</span> battery-stats →</h3>
+                <p class="desc">
+                    Real Screen-On-Time, drain-rate, battery health, hourly drain
+                    heatmap, charging-period bands.
+                </p>
+                <div class="meta">
+                    <span>6 DuckDB tables</span><span>6 fish subcommands</span><span>5-min poll + nightly aggregate</span>
+                </div>
+            </a>
+        </div>
+
+        <div class="cards-3" style="margin-top:14px">
+            <a class="proj-card" href="internals.html">
+                <h3><span class="accent good">●</span> Cross-cutting →</h3>
+                <p class="desc">
+                    systemd timers, the UTC→IST gotcha, file map across the repo
+                    and live install paths.
+                </p>
+            </a>
+        </div>
+    </section>
+
+    <section id="architecture">
+        <h2>Architecture</h2>
+        <p class="lead">
+            Three-layer pipeline. Sources are the authoritative system surfaces.
+            Storage is two DuckDB files in <code>~/Documents/{claude,battery}-stats/</code>.
+            Consumers read read-only from those DBs.
+        </p>
+
+        <div class="arch">
+            <div class="layer">
+                <div class="layer-label">Sources (read by ingesters)</div>
+                <div class="row">
+                    <div class="node src"><strong>ccusage</strong><em>npx ccusage daily / session</em></div>
+                    <div class="node src"><strong>JSONL transcripts</strong><em>~/.claude/projects/**/*.jsonl</em></div>
+                    <div class="node src"><strong>sysfs</strong><em>/sys/class/power_supply/BAT0/*</em></div>
+                    <div class="node src"><strong>UPower history</strong><em>/var/lib/upower/history-*.dat</em></div>
+                    <div class="node src"><strong>Wayland session</strong><em>loginctl IdleHint + GNOME ScreenSaver D-Bus</em></div>
+                    <div class="node src"><strong>powertop</strong><em>sudo -A powertop --csv</em></div>
+                </div>
+            </div>
+            <div class="arrow-row">▼</div>
+
+            <div class="layer">
+                <div class="layer-label">Storage (DuckDB)</div>
+                <div class="row">
+                    <div class="node store"><strong>claude.duckdb</strong><em>daily_usage · conversations · conversation_tool_usage · project_usage</em></div>
+                    <div class="node store"><strong>battery.duckdb</strong><em>battery_samples · upower_rate · upower_charge · discharge_sessions · daily_battery · powertop_runs / top_processes</em></div>
+                </div>
+            </div>
+            <div class="arrow-row">▼</div>
+
+            <div class="layer">
+                <div class="layer-label">Consumers</div>
+                <div class="row">
+                    <div class="node out"><strong>HTML dashboards</strong><em>Plotly + AMOLED, in /tmp</em></div>
+                    <div class="node out"><strong>fish CLI</strong><em>dashboard, ingest, raw &lt;SQL&gt;</em></div>
+                    <div class="node out"><strong>Schedulers</strong><em>systemd user timers (Persistent=true)</em></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="callout">
+            <div class="label">Why DuckDB</div>
+            Embedded analytical DB. Columnar storage, SQL-92, zero-config. Lives as
+            a single file you can <code>cp</code> for backup, <code>rm</code> to
+            reset. Aggregations and rollups happen in pure SQL — no Python ORM.
+        </div>
+
+        <div class="callout good">
+            <div class="label">Why dashboards, not terminal tables</div>
+            <strong>Graphs &gt; tables.</strong> The CLIs intentionally expose
+            only one display surface: the interactive HTML dashboard. Stacked
+            bars, donuts, hover tooltips, zoom — all the metrics you'd want
+            from a tabular report, but readable at a glance. Terminal tables
+            were dropped because the dashboard is strictly more informative.
+        </div>
+    </section>
+
+    <footer>
+        Live dashboards: <code>claude-stats dashboard</code> · <code>battery-stats dashboard</code> ·
+        Source: <a href="https://github.com/abhishek1337chatterjee/pulse">github.com/abhishek1337chatterjee/pulse</a>
+    </footer>
+
+    </main>
+</div>
+<script src="_nav.js"></script>
+</body>
+</html>

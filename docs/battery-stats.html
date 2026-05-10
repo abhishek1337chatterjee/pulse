@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pulse · battery-stats internals</title>
+<link rel="stylesheet" href="_styles.css">
+</head>
+<body data-page="battery-stats">
+<div class="layout">
+    <nav class="toc" id="toc"></nav>
+
+    <main>
+
+    <section class="hero">
+        <h1>battery-stats</h1>
+        <p class="tagline">
+            Local battery analytics from sysfs + Wayland screen state. A 5-minute
+            poller writes raw samples; a nightly aggregator derives discharge
+            sessions and per-day rollups. UPower's bulk historical data is
+            imported once at install for backfill. PowerTop snapshots are
+            captured on demand.
+        </p>
+    </section>
+
+    <!-- ============ CLI ============ -->
+    <section id="cli">
+        <h2>CLI commands</h2>
+        <p class="lead">
+            Fish function at <code>~/.config/fish/functions/battery-stats.fish</code>.
+            All read-only against <code>~/Documents/battery-stats/battery.duckdb</code>
+            unless noted.
+        </p>
+
+        <h3>The display surface <span class="badge purple">interactive</span></h3>
+        <div class="cmd-table">
+            <div class="cmd-row">
+                <div class="cmd">battery-stats dashboard <span class="arg">[days=14]</span></div>
+                <div class="desc">
+                    <strong>The only display command.</strong> Plotly charts for
+                    SOT, drain, sessions, charging bands, hourly heatmap, capacity
+                    decay. Same AMOLED theme as the claude-stats one.
+                </div>
+            </div>
+        </div>
+
+        <h3>PowerTop <span class="badge warn">manual sudo</span></h3>
+        <div class="cmd-table">
+            <div class="cmd-row">
+                <div class="cmd">battery-stats powertop <span class="arg">[sec=30] [notes...]</span></div>
+                <div class="desc">
+                    Run <code>powertop --csv</code> for N seconds, parse Top 10
+                    Power Consumers, store as a <code>powertop_runs</code>
+                    snapshot. Uses zenity askpass (no terminal sudo). Notes are
+                    free-form text saved alongside the snapshot.
+                </div>
+            </div>
+            <div class="cmd-row">
+                <div class="cmd">battery-stats powertop-show <span class="arg">[run_id]</span></div>
+                <div class="desc">
+                    View a previous snapshot. Defaults to latest. The only
+                    surviving terminal-table command — kept because the
+                    dashboard does not currently render PowerTop data (todo).
+                </div>
+            </div>
+        </div>
+
+        <h3>Maintenance <span class="badge subtle">non-display</span></h3>
+        <div class="cmd-table">
+            <div class="cmd-row">
+                <div class="cmd">battery-stats ingest</div>
+                <div class="desc">One-time / catch-up bulk import from <code>/var/lib/upower/history-*.dat</code>.</div>
+            </div>
+            <div class="cmd-row">
+                <div class="cmd">battery-stats aggregate</div>
+                <div class="desc">Manual rebuild of <code>discharge_sessions</code> + <code>daily_battery</code> from raw samples.</div>
+            </div>
+            <div class="cmd-row">
+                <div class="cmd">battery-stats poll</div>
+                <div class="desc">Take one sample now (debug — the systemd timer normally does this).</div>
+            </div>
+        </div>
+
+        <div class="callout">
+            <div class="label">Removed in the slim-down</div>
+            Earlier versions had terminal-report subcommands
+            (<code>now</code>, <code>sot</code>, <code>sessions</code>,
+            <code>worst</code>, <code>drain</code>, <code>health</code>) and
+            gnuplot-Braille charts (<code>graph upower</code> /
+            <code>graph drain</code> / etc). They were dropped — the dashboard
+            covers all of them with hover/zoom you can't get in a terminal.
+        </div>
+    </section>
+
+    <!-- ============ POLLER ============ -->
+    <section id="poll">
+        <h2>How <code>poll.sh</code> works <span class="badge cyan">every 5 min</span></h2>
+        <p class="lead">
+            Single sysfs sample + Wayland screen-state probe → one row in
+            <code>battery_samples</code>. Triggered by
+            <code>battery-stats-poll.timer</code>.
+        </p>
+
+        <div class="flow">
+            <div class="box cyan"><div class="label">read</div>/sys/class/power_supply/BAT0<br><span style="color:var(--fg-muted)">energy_now, capacity, cycles, status</span></div>
+            <div class="arrow">→</div>
+            <div class="box cyan"><div class="label">probe</div>screen state<br><span style="color:var(--fg-muted)">loginctl + GNOME D-Bus</span></div>
+            <div class="arrow">→</div>
+            <div class="box"><div class="label">convert</div>µ→base units<br><span style="color:var(--fg-muted)">awk arithmetic</span></div>
+            <div class="arrow">→</div>
+            <div class="box purple"><div class="label">insert</div>battery_samples<br><span style="color:var(--fg-muted)">ON CONFLICT (ts) DO NOTHING</span></div>
+            <div class="arrow">→</div>
+            <div class="box good"><div class="label">refresh</div>aggregator<br><span style="color:var(--fg-muted)">flock -n + chained</span></div>
+        </div>
+
+        <h3>What's read from sysfs</h3>
+        <table class="schema">
+            <thead><tr><th>file</th><th>units</th><th>used as</th></tr></thead>
+            <tbody>
+                <tr><td class="col">energy_now</td><td class="type">µWh</td><td class="note">→ <code>energy_now_wh</code> (÷1e6); used for drain calc</td></tr>
+                <tr><td class="col">energy_full</td><td class="type">µWh</td><td class="note">→ <code>energy_full_wh</code>; current battery max</td></tr>
+                <tr><td class="col">energy_full_design</td><td class="type">µWh</td><td class="note">→ <code>energy_full_design_wh</code>; factory spec, used for health %</td></tr>
+                <tr><td class="col">power_now</td><td class="type">µW</td><td class="note">→ <code>power_now_w</code>; instantaneous wattage</td></tr>
+                <tr><td class="col">voltage_now</td><td class="type">µV</td><td class="note">→ <code>voltage_v</code></td></tr>
+                <tr><td class="col">capacity</td><td class="type">%</td><td class="note">→ <code>capacity_pct</code></td></tr>
+                <tr><td class="col">cycle_count</td><td class="type">int</td><td class="note">→ <code>cycle_count</code>; lifetime charge/discharge cycles</td></tr>
+                <tr><td class="col">status</td><td class="type">enum</td><td class="note">charging/discharging/full/not-charging/unknown</td></tr>
+                <tr><td class="col">/sys/class/power_supply/AC/online</td><td class="type">0/1</td><td class="note">→ <code>on_ac</code> bool</td></tr>
+                <tr><td class="col">/sys/class/backlight/*/brightness</td><td class="type">0..max</td><td class="note">→ <code>brightness_pct</code></td></tr>
+            </tbody>
+        </table>
+
+        <h3>Screen state — the honest "is the user actually here" check</h3>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Two signals combined:
+        </p>
+        <ul class="tight">
+            <li><code>loginctl show-session $XDG_SESSION_ID -p IdleHint</code> → <strong>true</strong> means the desktop session has been idle past the threshold (locked or auto-locked)</li>
+            <li><code>gdbus call --session --dest org.gnome.ScreenSaver --method org.gnome.ScreenSaver.GetActive</code> → <strong>true</strong> when the GNOME lock screen is up</li>
+            <li><code>screen_active = NOT idle_hint AND NOT screensaver_active</code></li>
+        </ul>
+
+        <div class="callout">
+            <div class="label">Why both signals</div>
+            <code>IdleHint</code> alone misses cases where you manually lock with
+            Super+L before the idle threshold expires. <code>GetActive</code> alone
+            misses long-tail "screen turned off but not locked" states. Together
+            they're a reliable "user is consuming this battery right now" signal.
+        </div>
+
+        <h3>The aggregator-after-each-poll trick</h3>
+        <pre><code><span class="tok-c"># Refresh derived tables so dashboard reflects every poll.</span>
+<span class="tok-c"># Use flock so concurrent runs (e.g. manual + timer) don't collide on the DB.</span>
+LOCK=<span class="tok-s">"/tmp/battery-stats-aggregate.lock"</span>
+flock -n <span class="tok-s">"$LOCK"</span> -c <span class="tok-s">"$HOME/Documents/battery-stats/bin/aggregate-daily.sh &gt;/dev/null 2&gt;&amp;1"</span> || <span class="tok-k">true</span></code></pre>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Each poll re-runs the aggregator under <code>flock -n</code> (non-blocking).
+            That means <code>battery-stats dashboard</code> always shows fresh data,
+            not yesterday's nightly rollup. The flock prevents two concurrent
+            aggregator runs from corrupting the DB.
+        </p>
+    </section>
+
+    <!-- ============ AGGREGATOR ============ -->
+    <section id="aggregate">
+        <h2>How <code>aggregate-daily.sh</code> works <span class="badge purple">nightly + after every poll</span></h2>
+        <p class="lead">
+            Wipes and rebuilds two derived tables from the raw <code>battery_samples</code>:
+            <code>discharge_sessions</code> (one row per AC-off → AC-on) and
+            <code>daily_battery</code> (per-day rollup in IST).
+        </p>
+
+        <h3>Session detection</h3>
+        <ol class="tight">
+            <li>Sort all samples by timestamp</li>
+            <li>Tag each row with <code>new_session = 1</code> when <code>on_ac</code> goes <code>true → false</code> (the unplug moment)</li>
+            <li><code>session_id = SUM(new_session) OVER (ORDER BY ts)</code> — running count</li>
+            <li>Filter to <code>on_ac = false</code> samples only</li>
+            <li>Group by session_id → MIN/MAX timestamps, capacity start/end, energy used</li>
+        </ol>
+
+        <h3>SOT integration</h3>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            For each sample, compute <code>interval_seconds</code> = time-to-next-sample,
+            capped at 600s. The cap handles laptop suspends (gap of hours
+            appears as one 10-minute interval, not 4 hours of fictitious drain).
+            SOT is the sum of intervals where <code>screen_active = true</code>.
+        </p>
+
+        <pre><code>LEAST(
+    COALESCE(<span class="tok-fn">EXTRACT</span>(<span class="tok-k">EPOCH FROM</span> (<span class="tok-fn">LEAD</span>(ts) <span class="tok-k">OVER</span> (<span class="tok-k">ORDER BY</span> ts) - ts)), <span class="tok-n">300</span>),
+    <span class="tok-n">600</span>
+) <span class="tok-k">AS</span> interval_seconds</code></pre>
+
+        <h3>Phantom session filter</h3>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Sessions with <code>duration ≤ 60s</code> OR <code>energy_delta ≤ 0.05 Wh</code>
+            are dropped via <code>HAVING</code>. This eliminates flicker sessions
+            (briefly unplug-and-replug) that would otherwise dominate the
+            dashboard's "worst sessions" panel with bogus 0Wh / infinite-runtime entries.
+        </p>
+
+        <h3>IST date bucketing for <code>daily_battery</code></h3>
+        <pre><code><span class="tok-fn">DATE_TRUNC</span>(<span class="tok-s">'day'</span>, (start_ts <span class="tok-k">AT TIME ZONE</span> <span class="tok-s">'UTC'</span>) <span class="tok-k">AT TIME ZONE</span> <span class="tok-s">'Asia/Kolkata'</span>)::<span class="tok-k">DATE</span> <span class="tok-k">AS</span> <span class="tok-k">date</span></code></pre>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            The <strong>double</strong> <code>AT TIME ZONE</code> matters — see
+            <a href="internals.html#timezone" style="color:var(--secondary);">Timezone gotcha</a>.
+        </p>
+
+        <h3>Health backfill</h3>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            After daily rollup, a second UPDATE pulls end-of-day cycle count and
+            <code>energy_full_wh</code> from the raw samples (<code>FIRST() ORDER BY ts DESC</code>),
+            and computes <code>health_pct = energy_full / energy_full_design × 100</code>.
+            Tracks battery decay over time.
+        </p>
+    </section>
+
+    <!-- ============ UPOWER ============ -->
+    <section id="upower">
+        <h2>How <code>ingest-upower.sh</code> works <span class="badge subtle">one-time backfill</span></h2>
+        <p class="lead">
+            UPower (the Linux battery daemon) keeps its own historical TSV files
+            at <code>/var/lib/upower/history-*.dat</code>. We bulk-import them once
+            at install so the dashboard has data going back weeks/months even
+            before our own poller starts.
+        </p>
+
+        <h3>File detection</h3>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            UPower names files <code>history-{rate,charge}-{MODEL}-{SERIAL}.dat</code>.
+            We auto-detect the model:
+        </p>
+        <pre><code>BATTERY_MODEL=<span class="tok-s">"${BATTERY_MODEL:-$(cat /sys/class/power_supply/BAT0/model_name | tr -d '[:space:]')}"</span>
+RATE_FILE=$(ls <span class="tok-s">"$HIST_DIR"/history-rate-"$BATTERY_MODEL"-*.dat</span> | head -<span class="tok-n">1</span>)
+CHARGE_FILE=$(ls <span class="tok-s">"$HIST_DIR"/history-charge-"$BATTERY_MODEL"-*.dat</span> | head -<span class="tok-n">1</span>)</code></pre>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Override with <code>BATTERY_MODEL=&lt;tag&gt;</code> env var if your distro
+            names files differently. Don't hardcode a serial — moves between laptops break.
+        </p>
+
+        <h3>TSV format</h3>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Each line is <code>epoch \t value \t state</code>. <code>value</code> is
+            watts for the rate file, percentage for charge. <code>state</code> is
+            <code>charging</code>/<code>discharging</code>/<code>fully-charged</code>/etc.
+        </p>
+
+        <h3>Pipeline</h3>
+        <div class="flow">
+            <div class="box cyan"><div class="label">parse</div>awk → CSV<br><span style="color:var(--fg-muted)">epoch → ISO timestamp (UTC)</span></div>
+            <div class="arrow">→</div>
+            <div class="box"><div class="label">stage</div>DuckDB TEMP TABLE<br><span style="color:var(--fg-muted)">COPY FROM csv</span></div>
+            <div class="arrow">→</div>
+            <div class="box purple"><div class="label">load</div>upower_rate / upower_charge<br><span style="color:var(--fg-muted)">ON CONFLICT (ts, state) DO NOTHING</span></div>
+        </div>
+
+        <div class="callout warn">
+            <div class="label">Permissions</div>
+            <code>/var/lib/upower</code> is root-owned by default. Install grants
+            a per-user ACL: <code>sudo setfacl -m u:$USER:rx /var/lib/upower</code>
+            +  <code>sudo setfacl -m u:$USER:r /var/lib/upower/history-*.dat</code>.
+            One-time prompt during <code>install.sh</code>.
+        </div>
+    </section>
+
+    <!-- ============ POWERTOP ============ -->
+    <section id="powertop">
+        <h2>How <code>powertop-capture.sh</code> works <span class="badge warn">manual</span></h2>
+        <p class="lead">
+            On-demand snapshot of the OS-level top energy consumers (processes,
+            devices, tunables). Needs root, so it routes through the
+            <code>SUDO_ASKPASS</code> + zenity popup defined in
+            <code>~/.local/bin/sudo-askpass</code>.
+        </p>
+
+        <div class="flow">
+            <div class="box cyan"><div class="label">elevate</div>SUDO_ASKPASS=… sudo -A<br><span style="color:var(--fg-muted)">zenity GUI prompt</span></div>
+            <div class="arrow">→</div>
+            <div class="box"><div class="label">capture</div>powertop --csv<br><span style="color:var(--fg-muted)">--time=N (default 30s)</span></div>
+            <div class="arrow">→</div>
+            <div class="box"><div class="label">parse</div>python heuristic<br><span style="color:var(--fg-muted)">extract Top 10 section</span></div>
+            <div class="arrow">→</div>
+            <div class="box purple"><div class="label">store</div>powertop_runs +<br>powertop_top_processes</div>
+        </div>
+
+        <h3>Why python parses, not jq</h3>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            powertop's CSV is hostile — semicolon-delimited with multi-row section
+            headers like <code>______; ; ;</code>. The parser scans for the
+            "Top 10 Power Consumers" line, then collects rows until it hits an
+            underline or blank. For each row it heuristically picks:
+        </p>
+        <ul class="tight">
+            <li><strong>description</strong> = longest text field</li>
+            <li><strong>pw_estimate_w</strong> = first field matching <code>^[\d.]+\s*W$</code></li>
+            <li><strong>wakeups_per_sec</strong> = first plain numeric field</li>
+        </ul>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Imperfect, but good enough to spot "this Discord build is burning 4W
+            idle." For deeper analysis, run <code>powertop</code> directly
+            (interactive mode) and use this snapshot as a historical anchor.
+        </p>
+    </section>
+
+    <!-- ============ SCHEMA ============ -->
+    <section id="schema">
+        <h2>Schema</h2>
+        <p class="lead">
+            Six tables. Source-of-truth at
+            <code>~/Documents/pulse/battery-stats/schema.sql</code>.
+        </p>
+
+        <h3>battery_samples <span class="badge subtle">populated by poll.sh, every 5 min</span></h3>
+        <table class="schema">
+            <thead><tr><th>column</th><th>type</th><th>notes</th></tr></thead>
+            <tbody>
+                <tr><td class="col">ts</td><td class="type">TIMESTAMP</td><td class="note">PK; UTC</td></tr>
+                <tr><td class="col">energy_now_wh</td><td class="type">DOUBLE</td><td class="note">Current charge in Wh</td></tr>
+                <tr><td class="col">energy_full_wh</td><td class="type">DOUBLE</td><td class="note">Current max capacity</td></tr>
+                <tr><td class="col">energy_full_design_wh</td><td class="type">DOUBLE</td><td class="note">Factory-spec capacity</td></tr>
+                <tr><td class="col">power_now_w</td><td class="type">DOUBLE</td><td class="note">Instantaneous wattage (drain or charge magnitude)</td></tr>
+                <tr><td class="col">voltage_v</td><td class="type">DOUBLE</td><td class="note">Battery terminal voltage</td></tr>
+                <tr><td class="col">capacity_pct</td><td class="type">INTEGER</td><td class="note">0–100</td></tr>
+                <tr><td class="col">cycle_count</td><td class="type">INTEGER</td><td class="note">Lifetime cycles</td></tr>
+                <tr><td class="col">state</td><td class="type">VARCHAR</td><td class="note">charging / discharging / full / not-charging / unknown</td></tr>
+                <tr><td class="col">on_ac</td><td class="type">BOOLEAN</td><td class="note">From <code>/sys/class/power_supply/AC/online</code></td></tr>
+                <tr><td class="col">screen_active</td><td class="type">BOOLEAN</td><td class="note"><code>NOT idle_hint AND NOT screensaver_active</code></td></tr>
+                <tr><td class="col">idle_hint, screensaver_active</td><td class="type">BOOLEAN</td><td class="note">Raw component signals</td></tr>
+                <tr><td class="col">brightness_pct</td><td class="type">INTEGER</td><td class="note">From <code>/sys/class/backlight</code></td></tr>
+            </tbody>
+        </table>
+
+        <h3>discharge_sessions <span class="badge subtle">derived from battery_samples</span></h3>
+        <table class="schema">
+            <thead><tr><th>column</th><th>type</th><th>notes</th></tr></thead>
+            <tbody>
+                <tr><td class="col">session_id</td><td class="type">INTEGER</td><td class="note">PK; running count of unplug events</td></tr>
+                <tr><td class="col">start_ts / end_ts</td><td class="type">TIMESTAMP</td><td class="note">Bounds (UTC)</td></tr>
+                <tr><td class="col">duration_seconds</td><td class="type">BIGINT</td><td class="note">Sum of capped sample intervals</td></tr>
+                <tr><td class="col">start_pct / end_pct</td><td class="type">INTEGER</td><td class="note">Battery % at session bounds</td></tr>
+                <tr><td class="col">energy_used_wh</td><td class="type">DOUBLE</td><td class="note">MAX(energy_now_wh) − MIN, ≥ 0</td></tr>
+                <tr><td class="col">sot_seconds / screen_off_seconds</td><td class="type">BIGINT</td><td class="note">Screen-on / off subtotals</td></tr>
+                <tr><td class="col">avg_drain_w</td><td class="type">DOUBLE</td><td class="note">Whole-session: <code>energy_used_wh × 3600 / duration</code></td></tr>
+                <tr><td class="col">avg_drain_w_sot</td><td class="type">DOUBLE</td><td class="note">Screen-on only — the "honest" number</td></tr>
+                <tr><td class="col">projected_full_runtime_hours</td><td class="type">DOUBLE</td><td class="note"><code>energy_full_design / avg_drain_w_sot</code></td></tr>
+            </tbody>
+        </table>
+
+        <h3>daily_battery <span class="badge subtle">per-IST-day rollup</span></h3>
+        <table class="schema">
+            <thead><tr><th>column</th><th>type</th><th>notes</th></tr></thead>
+            <tbody>
+                <tr><td class="col">date</td><td class="type">DATE</td><td class="note">PK; IST calendar day</td></tr>
+                <tr><td class="col">sot_minutes / discharge_minutes</td><td class="type">INTEGER</td><td class="note">Sums across the day's sessions</td></tr>
+                <tr><td class="col">total_discharge_wh</td><td class="type">DOUBLE</td><td class="note">Sum of energy_used_wh for the day</td></tr>
+                <tr><td class="col">avg_drain_w_sot</td><td class="type">DOUBLE</td><td class="note">Day-level honest drain</td></tr>
+                <tr><td class="col">n_sessions</td><td class="type">INTEGER</td><td class="note">Count of discharge sessions starting that day</td></tr>
+                <tr><td class="col">cycle_count_eod, energy_full_wh_eod, health_pct</td><td class="type">DOUBLE</td><td class="note">Backfilled from end-of-day raw sample</td></tr>
+            </tbody>
+        </table>
+
+        <h3>upower_rate, upower_charge <span class="badge subtle">UPower bulk import</span></h3>
+        <table class="schema">
+            <thead><tr><th>column</th><th>type</th><th>notes</th></tr></thead>
+            <tbody>
+                <tr><td class="col">ts</td><td class="type">TIMESTAMP</td><td class="note">PK component (UTC, from epoch)</td></tr>
+                <tr><td class="col">watts (rate) / percentage (charge)</td><td class="type">DOUBLE</td><td class="note">The metric</td></tr>
+                <tr><td class="col">state</td><td class="type">VARCHAR</td><td class="note">PK component; charging/discharging/etc</td></tr>
+            </tbody>
+        </table>
+
+        <h3>powertop_runs, powertop_top_processes</h3>
+        <table class="schema">
+            <thead><tr><th>column</th><th>type</th><th>notes</th></tr></thead>
+            <tbody>
+                <tr><td class="col">run_id</td><td class="type">INTEGER</td><td class="note">PK; allocated as MAX+1</td></tr>
+                <tr><td class="col">captured_at, duration_seconds, on_ac, notes</td><td class="type">mixed</td><td class="note">Snapshot metadata</td></tr>
+                <tr><td class="col">rank, description, usage, wakeups_per_sec, pw_estimate_w, category</td><td class="type">mixed</td><td class="note">Per-process row in <code>powertop_top_processes</code></td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <footer>
+        ← <a href="claude-stats.html">claude-stats</a> · next: <a href="internals.html">cross-cutting →</a>
+    </footer>
+
+    </main>
+</div>
+<script src="_nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pulse · cross-cutting internals</title>
+<link rel="stylesheet" href="_styles.css">
+</head>
+<body data-page="internals">
+<div class="layout">
+    <nav class="toc" id="toc"></nav>
+
+    <main>
+
+    <section class="hero">
+        <h1>cross-cutting internals</h1>
+        <p class="tagline">
+            Concerns that span both projects: the systemd-timer schedule, the
+            UTC→IST display gotcha, and the file map covering the repo and the
+            live install paths.
+        </p>
+    </section>
+
+    <!-- ============ SCHEDULE ============ -->
+    <section id="schedule">
+        <h2>Schedule — systemd user timers</h2>
+        <p class="lead">
+            Three timers run in the background. All have <code>Persistent=true</code>,
+            so a missed run (laptop off / asleep at firing time) executes on next
+            boot. This was a recent migration from cron — see callout below.
+        </p>
+
+        <table class="schema">
+            <thead><tr><th>timer</th><th>schedule</th><th>service does</th></tr></thead>
+            <tbody>
+                <tr>
+                    <td class="col">battery-stats-poll.timer</td>
+                    <td class="type">every 5 min</td>
+                    <td class="note">Runs <code>poll.sh</code> → one row in <code>battery_samples</code> + chained aggregator under flock</td>
+                </tr>
+                <tr>
+                    <td class="col">battery-stats-aggregate.timer</td>
+                    <td class="type">nightly 03:15</td>
+                    <td class="note">Runs <code>ingest-upower.sh</code> + <code>aggregate-daily.sh</code> + <code>cleanup-old.sh</code></td>
+                </tr>
+                <tr>
+                    <td class="col">claude-stats-ingest.timer</td>
+                    <td class="type">nightly 02:00</td>
+                    <td class="note">Runs <code>ingest-daily.sh</code> + <code>ingest-sessions.py</code> + <code>cleanup-old.sh</code></td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Inspect</h3>
+        <pre><code><span class="tok-c"># list all pulse timers + when they fire next</span>
+systemctl --user list-timers <span class="tok-s">'battery-stats-*'</span> <span class="tok-s">'claude-stats-*'</span>
+
+<span class="tok-c"># last run logs</span>
+journalctl --user -u claude-stats-ingest.service -n <span class="tok-n">50</span>
+journalctl --user -u battery-stats-poll.service -n <span class="tok-n">50</span>
+
+<span class="tok-c"># manually trigger</span>
+systemctl --user start claude-stats-ingest.service</code></pre>
+
+        <div class="callout bad">
+            <div class="label">Why we moved off cron</div>
+            Previously <code>claude-stats</code> ran via a user crontab entry at
+            <code>0 2 * * *</code>. <strong>User cron has no catch-up</strong>: if
+            the laptop is off at 02:00 the run is silently lost. This caused a
+            4-day data gap in May 2026. systemd timers with <code>Persistent=true</code>
+            write a stamp file each fire and replay missed runs on next boot.
+            <code>install.sh</code> step 7 idempotently removes the old cron entry.
+        </div>
+
+        <h3>The claude-clean hook</h3>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Your fish <code>claude-clean</code> function runs
+            <code>ingest-sessions.py</code> as the first step before any per-project
+            deletion. So the DuckDB <code>conversations</code> table outlives the
+            JSONL files.
+        </p>
+    </section>
+
+    <!-- ============ TIMEZONE ============ -->
+    <section id="timezone">
+        <h2>The UTC → IST gotcha</h2>
+        <p class="lead">
+            Subtle DuckDB semantics that caused a real bug. Read this once and the
+            code makes sense.
+        </p>
+
+        <h3>Storage convention</h3>
+        <ul class="tight">
+            <li>Every <code>TIMESTAMP</code> column in both DBs is <strong>naive (no offset) and stores UTC</strong>.</li>
+            <li>Writers (<code>poll.sh</code>, <code>ingest-upower.sh</code>) explicitly use <code>date -u</code>.</li>
+            <li>JSONL transcripts ship ISO-8601 with <code>Z</code> already.</li>
+        </ul>
+
+        <h3>Display: <strong>double</strong> AT TIME ZONE</h3>
+        <pre><code><span class="tok-c">-- correct: convert UTC → IST for display</span>
+<span class="tok-fn">STRFTIME</span>((ts <span class="tok-k">AT TIME ZONE</span> <span class="tok-s">'UTC'</span>) <span class="tok-k">AT TIME ZONE</span> <span class="tok-s">'Asia/Kolkata'</span>, <span class="tok-s">'%H:%M:%S'</span>)</code></pre>
+
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Why two? DuckDB has two semantics for <code>AT TIME ZONE</code>:
+        </p>
+        <ol class="tight">
+            <li><strong>naive ts <code>AT TIME ZONE 'X'</code></strong> = "treat this naive value as if it's in zone X" → returns a <code>TIMESTAMPTZ</code></li>
+            <li><strong>TIMESTAMPTZ <code>AT TIME ZONE 'X'</code></strong> = "convert to zone X, return naive" → returns a <code>TIMESTAMP</code></li>
+        </ol>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            So:
+        </p>
+        <ul class="tight">
+            <li><code>ts AT TIME ZONE 'Asia/Kolkata'</code> on a naive UTC timestamp <strong>silently rebadges</strong> it as IST (no shift) — wrong.</li>
+            <li><code>(ts AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'</code> first promotes to TIMESTAMPTZ correctly tagged UTC, then converts to IST. The +05:30 shift actually happens.</li>
+        </ul>
+
+        <div class="callout warn">
+            <div class="label">If you swap timezones</div>
+            Search-and-replace <code>'Asia/Kolkata'</code> across:
+            <code>battery-stats/bin/{aggregate-daily.sh,build-dashboard.sh}</code>,
+            <code>claude-stats/bin/build-dashboard.sh</code>.
+            Don't change the storage side (<code>date -u</code> in poll.sh) — UTC stays.
+        </div>
+    </section>
+
+    <!-- ============ FILE MAP ============ -->
+    <section id="filemap">
+        <h2>File map</h2>
+        <p class="lead">
+            Where everything lives in the repo (source of truth) and after install
+            (live paths, all symlinks).
+        </p>
+
+        <h3>In the repo: <code>~/Documents/pulse/</code></h3>
+        <pre><code>pulse/
+├── claude-stats/
+│   ├── bin/
+│   │   ├── ingest-daily.sh        <span class="tok-c"># ccusage daily → DuckDB</span>
+│   │   ├── ingest-sessions.py     <span class="tok-c"># JSONL walk + ccusage session</span>
+│   │   ├── cleanup-old.sh         <span class="tok-c"># 365-day retention</span>
+│   │   └── build-dashboard.sh     <span class="tok-c"># DuckDB → HTML+Plotly</span>
+│   ├── fish/claude-stats.fish     <span class="tok-c"># CLI: dashboard, ingest, raw</span>
+│   ├── systemd/
+│   │   ├── claude-stats-ingest.service
+│   │   └── claude-stats-ingest.timer
+│   └── schema.sql
+├── battery-stats/
+│   ├── bin/
+│   │   ├── poll.sh                <span class="tok-c"># every 5 min sample</span>
+│   │   ├── ingest-upower.sh       <span class="tok-c"># bulk UPower history</span>
+│   │   ├── aggregate-daily.sh     <span class="tok-c"># sessions + daily rollup</span>
+│   │   ├── powertop-capture.sh    <span class="tok-c"># manual snapshot</span>
+│   │   ├── cleanup-old.sh
+│   │   └── build-dashboard.sh
+│   ├── fish/battery-stats.fish    <span class="tok-c"># CLI: dashboard, powertop, ingest</span>
+│   ├── systemd/
+│   │   ├── battery-stats-poll.{service,timer}
+│   │   └── battery-stats-aggregate.{service,timer}
+│   └── schema.sql
+├── fish/
+│   └── pulse-docs.fish            <span class="tok-c"># opens docs/index.html in browser</span>
+├── docs/
+│   ├── index.html                 <span class="tok-c"># landing (you start here)</span>
+│   ├── claude-stats.html          <span class="tok-c"># spoke 1</span>
+│   ├── battery-stats.html         <span class="tok-c"># spoke 2</span>
+│   ├── internals.html             <span class="tok-c"># spoke 3 (this page)</span>
+│   ├── _styles.css                <span class="tok-c"># shared CSS (one place to retheme)</span>
+│   ├── _nav.js                    <span class="tok-c"># shared sidebar/scrollspy</span>
+│   ├── claude-stats-dashboard.png
+│   └── battery-stats-dashboard.png
+├── install.sh                     <span class="tok-c"># idempotent installer</span>
+└── README.md</code></pre>
+
+        <h3>After install (symlinks back to the repo)</h3>
+        <pre><code>~/Documents/claude-stats/
+├── claude.duckdb                  <span class="tok-c"># data (gitignored)</span>
+├── schema.sql                     → repo
+└── bin/                           → repo
+
+~/Documents/battery-stats/
+├── battery.duckdb                 <span class="tok-c"># data</span>
+├── schema.sql                     → repo
+└── bin/                           → repo
+
+~/.config/fish/functions/
+├── claude-stats.fish              → repo
+├── battery-stats.fish             → repo
+└── pulse-docs.fish                → repo  (opens docs/index.html)
+
+~/.config/systemd/user/
+├── battery-stats-poll.{service,timer}       → repo
+├── battery-stats-aggregate.{service,timer}  → repo
+└── claude-stats-ingest.{service,timer}      → repo</code></pre>
+
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Symlink-based install means <code>git pull</code> instantly updates the
+            live system — no copy step. Edit files in <code>~/Documents/pulse/</code>
+            not in the live paths.
+        </p>
+    </section>
+
+    <footer>
+        ← <a href="battery-stats.html">battery-stats</a> · home: <a href="index.html">overview</a>
+    </footer>
+
+    </main>
+</div>
+<script src="_nav.js"></script>
+</body>
+</html>

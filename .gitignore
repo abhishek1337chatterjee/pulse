@@ -3,8 +3,11 @@
 *.duckdb.wal
 *.duckdb.tmp/
 
-# generated dashboards
+# generated dashboards write to /tmp/. Defend against ever landing
+# a generated HTML in the repo, EXCEPT for the docs/ tree which is
+# the canonical hand-written internals doc site.
 *.html
+!docs/*.html
 
 # editor / OS noise
 .DS_Store
