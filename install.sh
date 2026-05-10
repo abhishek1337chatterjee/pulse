@@ -117,24 +117,24 @@ mkdir -p "$FISH_FUNCS"
 link "$REPO/claude-stats/fish/claude-stats.fish"   "$FISH_FUNCS/claude-stats.fish"
 link "$REPO/battery-stats/fish/battery-stats.fish" "$FISH_FUNCS/battery-stats.fish"
 
-# ---------- step 6: systemd timers ----------
-say "6/9  Linking + enabling battery-stats systemd timers"
+# ---------- step 6: systemd timers (battery-stats + claude-stats) ----------
+say "6/9  Linking + enabling systemd user timers"
 mkdir -p "$SYSTEMD_USER"
-for f in "$REPO/battery-stats/systemd/"*; do
+for f in "$REPO/battery-stats/systemd/"* "$REPO/claude-stats/systemd/"*; do
     link "$f" "$SYSTEMD_USER/$(basename "$f")"
 done
 systemctl --user daemon-reload
-systemctl --user enable --now battery-stats-poll.timer      >/dev/null 2>&1 && ok "poll.timer enabled"
-systemctl --user enable --now battery-stats-aggregate.timer >/dev/null 2>&1 && ok "aggregate.timer enabled"
+systemctl --user enable --now battery-stats-poll.timer      >/dev/null 2>&1 && ok "battery-stats-poll.timer enabled"
+systemctl --user enable --now battery-stats-aggregate.timer >/dev/null 2>&1 && ok "battery-stats-aggregate.timer enabled"
+systemctl --user enable --now claude-stats-ingest.timer     >/dev/null 2>&1 && ok "claude-stats-ingest.timer enabled (Persistent — self-heals across off nights)"
 
-# ---------- step 7: claude-stats cron ----------
-say "7/9  Cron entry for claude-stats nightly ingest"
-CRON_LINE="0 2 * * * $CLAUDE_DIR/bin/ingest-daily.sh && $CLAUDE_DIR/bin/ingest-sessions.py && $CLAUDE_DIR/bin/cleanup-old.sh >> $CLAUDE_DIR/cron.log 2>&1"
+# ---------- step 7: migrate away from old cron entry ----------
+say "7/9  Migrating off cron (claude-stats now uses systemd timer)"
 if crontab -l 2>/dev/null | grep -qF "$CLAUDE_DIR/bin/ingest-daily.sh"; then
-    ok "cron entry already present"
+    crontab -l 2>/dev/null | grep -vF "$CLAUDE_DIR/bin/ingest-daily.sh" | crontab -
+    ok "removed old cron entry (replaced by claude-stats-ingest.timer)"
 else
-    (crontab -l 2>/dev/null; echo "$CRON_LINE") | crontab -
-    ok "cron entry added (runs nightly at 02:00)"
+    ok "no old cron entry to remove"
 fi
 
 # ---------- step 8: UPower ACL ----------

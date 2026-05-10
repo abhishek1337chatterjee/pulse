@@ -63,7 +63,7 @@ re-link any new files. It:
 3. **Symlinks** every script + fish function + systemd unit from this repo into
    the live paths (so `git pull` instantly updates everything — no copy step)
 4. Enables the battery-stats systemd timers (poll every 5 min, aggregate nightly 03:15)
-5. Adds the claude-stats nightly cron (02:00 — `ingest-daily` → `ingest-sessions` → `cleanup-old`)
+5. Enables the claude-stats systemd timer (nightly 02:00, `Persistent=true` so missed runs fire on next boot)
 6. Grants ACL read access on `/var/lib/upower/*.dat` (one sudo prompt)
 7. Drops a `sudo-askpass` zenity helper for `battery-stats powertop`
 
@@ -101,7 +101,9 @@ battery-stats dashboard
 ├── battery-stats-poll.service       → symlink to repo
 ├── battery-stats-poll.timer         → symlink to repo
 ├── battery-stats-aggregate.service  → symlink to repo
-└── battery-stats-aggregate.timer    → symlink to repo
+├── battery-stats-aggregate.timer    → symlink to repo
+├── claude-stats-ingest.service      → symlink to repo
+└── claude-stats-ingest.timer        → symlink to repo
 ```
 
 DuckDB files live **outside** the repo so they survive `claude-clean` and
@@ -121,9 +123,11 @@ aren't tracked in git.
 | `claude-stats/bin/build-dashboard.sh` | emits self-contained `/tmp/claude-stats-dashboard.html` (Plotly via CDN, AMOLED theme) |
 | `claude-stats/fish/claude-stats.fish` | CLI wrapper: `summary`, `month`, `year`, `top`, `models`, `cache`, `tools`, `repos`, `sessions`, `compaction`, `dashboard`, `ingest`, `ingest-sessions`, `raw <SQL>` |
 
-Schedule: **nightly 02:00 cron** runs ingest-daily → ingest-sessions →
-cleanup-old. Also: `claude-clean` runs ingest-sessions *before* per-project
-deletion to capture conversation metadata before the JSONLs are deleted.
+Schedule: **systemd user timer** `claude-stats-ingest.timer` runs nightly
+at 02:00 (with `Persistent=true`, so missed runs from off/asleep nights
+fire on next boot) — chains ingest-daily → ingest-sessions → cleanup-old.
+Also: `claude-clean` runs ingest-sessions *before* per-project deletion to
+capture conversation metadata before the JSONLs are deleted.
 
 ### battery-stats
 
@@ -202,8 +206,7 @@ remove dangling links yet (delete them by hand or rerun after `find -L … -type
 
 ```bash
 # stop the background work
-systemctl --user disable --now battery-stats-poll.timer battery-stats-aggregate.timer
-crontab -l | grep -v claude-stats/bin | crontab -
+systemctl --user disable --now battery-stats-poll.timer battery-stats-aggregate.timer claude-stats-ingest.timer
 
 # remove symlinks (this script's job, but doable by hand)
 find ~/.config/fish/functions -lname '*pulse*' -delete

@@ -1,0 +1,12 @@
+[Unit]
+Description=claude-stats: nightly ingest (ccusage daily + sessions + cleanup)
+
+[Service]
+Type=oneshot
+# Cron-safe PATH so npx finds node, and ccusage finds jq/awk.
+Environment=PATH=%h/.nvm/versions/node/v24.14.1/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/Documents/claude-stats/bin/ingest-daily.sh
+ExecStart=%h/Documents/claude-stats/bin/ingest-sessions.py
+ExecStart=%h/Documents/claude-stats/bin/cleanup-old.sh
+Nice=15
+IOSchedulingClass=idle

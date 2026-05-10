@@ -297,7 +297,7 @@ function _claude_stats_help
     echo "  claude-stats raw <SQL>                    run arbitrary SQL (read+write)"
     echo
     echo "BACKGROUND:"
-    echo "  cron 0 2 * * *  →  ingest-daily + ingest-sessions + cleanup-old (365-day retention)"
+    echo "  systemd 02:00 nightly (Persistent)  →  ingest-daily + ingest-sessions + cleanup-old (365-day retention)"
     echo "  claude-clean hook  →  ingest-sessions runs BEFORE per-project deletion"
     echo "  DB: ~/Documents/claude-stats/claude.duckdb  (survives claude-clean)"
 end

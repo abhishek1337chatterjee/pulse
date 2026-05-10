@@ -1,0 +1,10 @@
+[Unit]
+Description=claude-stats: nightly ingest at 02:00 (Persistent — fires on next boot if missed)
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+AccuracySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

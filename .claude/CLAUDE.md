@@ -14,8 +14,10 @@ fish + Plotly HTML dashboards. Self-hosted, no telemetry.
 
 - `~/Documents/claude-stats/claude.duckdb` — gitignored
 - `~/Documents/battery-stats/battery.duckdb` — gitignored
-- Cron: `0 2 * * *` runs `claude-stats/bin/{ingest-daily,ingest-sessions,cleanup-old}`
-- systemd user timers: `battery-stats-{poll.timer (5min), aggregate.timer (03:15 nightly)}`
+- systemd user timers (all with `Persistent=true` — missed runs fire on next boot):
+  - `claude-stats-ingest.timer` — nightly 02:00, chains `ingest-daily` → `ingest-sessions` → `cleanup-old`
+  - `battery-stats-poll.timer` — every 5 min
+  - `battery-stats-aggregate.timer` — nightly 03:15
 
 ## Editing rules
 
