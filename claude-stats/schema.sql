@@ -1,0 +1,59 @@
+CREATE TABLE IF NOT EXISTS daily_usage (
+    date DATE NOT NULL,
+    model VARCHAR NOT NULL,
+    input_tokens BIGINT NOT NULL DEFAULT 0,
+    output_tokens BIGINT NOT NULL DEFAULT 0,
+    cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
+    cache_read_tokens BIGINT NOT NULL DEFAULT 0,
+    cost DOUBLE NOT NULL DEFAULT 0.0,
+    ingested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (date, model)
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_usage_date ON daily_usage(date);
+CREATE INDEX IF NOT EXISTS idx_daily_usage_model ON daily_usage(model);
+
+-- v2: per-project totals from `ccusage session --json` (sessionId = project path key)
+CREATE TABLE IF NOT EXISTS project_usage (
+    project_path VARCHAR PRIMARY KEY,
+    last_activity DATE,
+    input_tokens BIGINT NOT NULL DEFAULT 0,
+    output_tokens BIGINT NOT NULL DEFAULT 0,
+    cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
+    cache_read_tokens BIGINT NOT NULL DEFAULT 0,
+    total_cost DOUBLE NOT NULL DEFAULT 0.0,
+    models_used VARCHAR,
+    ingested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- v2: one row per .jsonl file (main conversation OR subagent transcript)
+CREATE TABLE IF NOT EXISTS conversations (
+    session_id VARCHAR PRIMARY KEY,
+    project_path VARCHAR,
+    cwd VARCHAR,
+    git_branch VARCHAR,
+    kind VARCHAR NOT NULL DEFAULT 'main',     -- 'main' or 'subagent'
+    parent_session_id VARCHAR,                -- NULL for main, parent UUID for subagent
+    started_at TIMESTAMP,
+    ended_at TIMESTAMP,
+    n_user_msgs INTEGER NOT NULL DEFAULT 0,
+    n_assistant_msgs INTEGER NOT NULL DEFAULT 0,
+    n_tool_calls INTEGER NOT NULL DEFAULT 0,
+    max_context_tokens BIGINT NOT NULL DEFAULT 0,
+    model VARCHAR,                            -- model in use at max_context_tokens
+    summary VARCHAR,
+    ingested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_path);
+CREATE INDEX IF NOT EXISTS idx_conversations_started ON conversations(started_at);
+
+-- v2: per-tool call counts per conversation
+CREATE TABLE IF NOT EXISTS conversation_tool_usage (
+    session_id VARCHAR,
+    tool_name VARCHAR,
+    call_count INTEGER NOT NULL,
+    PRIMARY KEY (session_id, tool_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_usage_tool ON conversation_tool_usage(tool_name);

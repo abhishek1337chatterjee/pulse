@@ -1,0 +1,10 @@
+[Unit]
+Description=battery-stats: nightly aggregate + ingest UPower history + cleanup
+
+[Service]
+Type=oneshot
+ExecStart=%h/Documents/battery-stats/bin/ingest-upower.sh
+ExecStart=%h/Documents/battery-stats/bin/aggregate-daily.sh
+ExecStart=%h/Documents/battery-stats/bin/cleanup-old.sh
+Nice=15
+IOSchedulingClass=idle

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Delete rows older than 365 days across all tables. Runs after each ingest.
+set -euo pipefail
+
+DB="${HOME}/Documents/claude-stats/claude.duckdb"
+DUCKDB="${HOME}/.local/bin/duckdb"
+
+"$DUCKDB" "$DB" <<'SQL'
+DELETE FROM daily_usage WHERE date < (CURRENT_DATE - INTERVAL 365 DAY);
+
+DELETE FROM conversations
+WHERE ended_at IS NOT NULL
+  AND CAST(ended_at AS DATE) < (CURRENT_DATE - INTERVAL 365 DAY);
+
+-- Orphan tool-usage rows for conversations we just deleted
+DELETE FROM conversation_tool_usage
+WHERE session_id NOT IN (SELECT session_id FROM conversations);
+
+DELETE FROM project_usage
+WHERE last_activity IS NOT NULL
+  AND last_activity < (CURRENT_DATE - INTERVAL 365 DAY);
+
+SELECT
+  '[cleanup] daily_usage=' || (SELECT COUNT(*) FROM daily_usage)
+  || ' conversations=' || (SELECT COUNT(*) FROM conversations)
+  || ' tool_rows=' || (SELECT COUNT(*) FROM conversation_tool_usage)
+  || ' projects=' || (SELECT COUNT(*) FROM project_usage) AS msg;
+SQL

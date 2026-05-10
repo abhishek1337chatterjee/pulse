@@ -1,0 +1,22 @@
+# local DBs (data, not code)
+*.duckdb
+*.duckdb.wal
+*.duckdb.tmp/
+
+# generated dashboards
+*.html
+
+# editor / OS noise
+.DS_Store
+*.bak
+*.bak.*
+*.swp
+__pycache__/
+.venv/
+
+# install backups (install.sh creates .bak.<epoch> when replacing existing files)
+*.bak.[0-9]*
+
+# NOTE: .claude/ is tracked on purpose — pulse ships its own AI context so a
+# fresh clone on a new laptop already has CLAUDE.md available to Claude Code.
+# (This overrides the user's global rule about not committing .claude/.)

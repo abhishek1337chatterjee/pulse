@@ -1,0 +1,9 @@
+[Unit]
+Description=battery-stats: poll battery + screen state into DuckDB
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/Documents/battery-stats/bin/poll.sh
+Nice=10
+IOSchedulingClass=idle
