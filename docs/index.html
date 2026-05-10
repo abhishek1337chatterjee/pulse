@@ -26,10 +26,10 @@
                 <h3><span class="accent">●</span> claude-stats →</h3>
                 <p class="desc">
                     Where your Claude Code spend goes. Cost by model, cache hit-rate,
-                    top tools, top projects, context-window pressure.
+                    top tools, top skills (per plugin), top projects, context-window pressure.
                 </p>
                 <div class="meta">
-                    <span>4 DuckDB tables</span><span>4 fish subcommands</span><span>nightly 02:00 ingest</span>
+                    <span>5 DuckDB tables</span><span>4 fish subcommands</span><span>nightly 02:00 ingest</span>
                 </div>
             </a>
             <a class="proj-card" href="battery-stats.html">
@@ -80,7 +80,7 @@
             <div class="layer">
                 <div class="layer-label">Storage (DuckDB)</div>
                 <div class="row">
-                    <div class="node store"><strong>claude.duckdb</strong><em>daily_usage · conversations · conversation_tool_usage · project_usage</em></div>
+                    <div class="node store"><strong>claude.duckdb</strong><em>daily_usage · conversations · conversation_tool_usage · conversation_skill_usage · project_usage</em></div>
                     <div class="node store"><strong>battery.duckdb</strong><em>battery_samples · upower_rate · upower_charge · discharge_sessions · daily_battery · powertop_runs / top_processes</em></div>
                 </div>
             </div>

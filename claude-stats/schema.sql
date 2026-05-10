@@ -57,3 +57,15 @@ CREATE TABLE IF NOT EXISTS conversation_tool_usage (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tool_usage_tool ON conversation_tool_usage(tool_name);
+
+-- v3: per-skill call counts per conversation. Extracted from `Skill` tool_use
+-- blocks (input.skill). Names are "<plugin>:<skill>" for plugin-namespaced
+-- skills, or bare "<skill>" for personal/user-scoped skills.
+CREATE TABLE IF NOT EXISTS conversation_skill_usage (
+    session_id VARCHAR,
+    skill_name VARCHAR,
+    call_count INTEGER NOT NULL,
+    PRIMARY KEY (session_id, skill_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_usage_skill ON conversation_skill_usage(skill_name);

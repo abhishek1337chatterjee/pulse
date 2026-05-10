@@ -112,6 +112,26 @@ TOP_TOOLS=$(q "
     LIMIT 15;
 ")
 
+# top skills (window-scoped). plugin = prefix before ':' or 'personal' if bare name
+TOP_SKILLS=$(q "
+    SELECT
+        CASE WHEN s.skill_name LIKE '%:%'
+             THEN split_part(s.skill_name, ':', 1)
+             ELSE 'personal' END AS plugin,
+        s.skill_name AS full_name,
+        CASE WHEN s.skill_name LIKE '%:%'
+             THEN split_part(s.skill_name, ':', 2)
+             ELSE s.skill_name END AS skill,
+        SUM(s.call_count) AS total_calls,
+        COUNT(DISTINCT s.session_id) AS sessions
+    FROM conversation_skill_usage s
+    JOIN conversations c USING (session_id)
+    WHERE c.started_at >= CURRENT_DATE - INTERVAL $DAYS DAY
+    GROUP BY plugin, full_name, skill
+    ORDER BY total_calls DESC
+    LIMIT 20;
+")
+
 # top repos by cost
 TOP_REPOS=$(q "
     WITH conv AS (
@@ -427,6 +447,11 @@ cat >> "$OUT" <<HEADER_EOF
     </div>
 </div>
 
+<div class="panel">
+    <h2>Top skills (by plugin)</h2>
+    <div id="chart-skills" class="chart chart-tall"></div>
+</div>
+
 <div class="row-3">
     <div class="panel">
         <h2>Top projects by total cost</h2>
@@ -477,6 +502,7 @@ printf '    dailyTokens: %s,\n'  "$DAILY_TOKENS" >> "$OUT"
 printf '    byModel: %s,\n'      "$BY_MODEL"     >> "$OUT"
 printf '    cacheTrend: %s,\n'   "$CACHE_TREND"  >> "$OUT"
 printf '    topTools: %s,\n'     "$TOP_TOOLS"    >> "$OUT"
+printf '    topSkills: %s,\n'    "$TOP_SKILLS"   >> "$OUT"
 printf '    topRepos: %s,\n'     "$TOP_REPOS"    >> "$OUT"
 printf '    contextDist: %s,\n'  "$CONTEXT_DIST" >> "$OUT"
 printf '    sessions: %s,\n'     "$SESSIONS"     >> "$OUT"
@@ -695,6 +721,75 @@ function renderTools() {
     }), config);
 }
 
+// ---- top skills horizontal bar, grouped/colored by plugin ----
+function renderSkills() {
+    if (!DATA.topSkills.length) {
+        document.getElementById('chart-skills').innerHTML = '<div class="empty">no skill data — invoke a skill (e.g. /commit, /spec) and run claude-stats ingest-sessions</div>';
+        return;
+    }
+    // global y-order: ascending (lowest count at bottom = highest at top of horizontal bar)
+    const ascending = [...DATA.topSkills].sort((a, b) => a.total_calls - b.total_calls);
+    const yOrder = ascending.map(r => r.full_name);
+
+    // group rows by plugin to produce one trace per plugin (auto-legend)
+    const byPlugin = {};
+    DATA.topSkills.forEach(r => {
+        (byPlugin[r.plugin] ||= []).push(r);
+    });
+
+    // stable colors for known plugins, fallback palette for the rest
+    const pluginColors = {
+        'superpowers':           COLORS.primary,
+        'agent-skills':          COLORS.secondary,
+        'aws-serverless':        COLORS.warn,
+        'claude-md-management':  COLORS.pink,
+        'frontend-design':       COLORS.indigo,
+        'code-simplifier':       COLORS.teal,
+        'personal':              COLORS.good,
+    };
+    const fallbackPalette = [COLORS.indigo, COLORS.teal, COLORS.warn, COLORS.pink, COLORS.bad];
+    let fbi = 0;
+
+    // plugin draw order: highest total calls first (so legend reads top-down by importance)
+    const pluginOrder = Object.keys(byPlugin).sort((a, b) =>
+        byPlugin[b].reduce((s, r) => s + r.total_calls, 0) -
+        byPlugin[a].reduce((s, r) => s + r.total_calls, 0)
+    );
+
+    const traces = pluginOrder.map(p => {
+        const items = byPlugin[p];
+        const color = pluginColors[p] || fallbackPalette[fbi++ % fallbackPalette.length];
+        return {
+            name: p,
+            x: items.map(r => r.total_calls),
+            y: items.map(r => r.full_name),
+            type: 'bar',
+            orientation: 'h',
+            marker: { color, line: { width: 0 } },
+            text: items.map(r => fmtNum(r.total_calls)),
+            textposition: 'outside',
+            textfont: { color: COLORS.fgDim, size: 10 },
+            customdata: items.map(r => [r.skill, r.sessions]),
+            hovertemplate:
+                '<b>%{customdata[0]}</b><br>' +
+                '<span style="color:#6b7280">' + p + '</span><br>' +
+                '%{x:,} calls · %{customdata[1]} sessions<extra></extra>',
+        };
+    });
+
+    Plotly.newPlot('chart-skills', traces, baseLayout({
+        margin: { l: 240, r: 60, t: 8, b: 50 },
+        yaxis: {
+            gridcolor: 'transparent', zeroline: false, color: COLORS.fg,
+            tickfont: { size: 11 }, automargin: true,
+            categoryorder: 'array', categoryarray: yOrder,
+        },
+        xaxis: { gridcolor: COLORS.border, zeroline: false, color: COLORS.fgDim, tickformat: '.2s' },
+        showlegend: true,
+        barmode: 'overlay',
+    }), config);
+}
+
 // ---- cost by model donut ----
 function renderModels() {
     if (!DATA.byModel.length) {
@@ -815,6 +910,7 @@ renderDailyCost();
 renderTokens();
 renderCache();
 renderTools();
+renderSkills();
 renderModels();
 renderRepos();
 renderContext();

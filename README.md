@@ -9,7 +9,7 @@ straight from `/tmp`.
 
 | | |
 |---|---|
-| **claude-stats** | Where your Claude Code spend goes. Cost by model, cache hit-rate, top tools, top projects, context-window pressure. |
+| **claude-stats** | Where your Claude Code spend goes. Cost by model, cache hit-rate, top tools, top skills (per plugin), top projects, context-window pressure. |
 | **battery-stats** | Real Screen-On-Time, drain-rate, battery health, hourly drain heatmap, charging-period bands. |
 
 Both share an AMOLED dark theme (true `#000000`, electric purple + cyan
@@ -30,9 +30,9 @@ claude-stats dashboard 365      # last year
 ```
 
 The dashboard is the surface — every metric is in there: cost stacked by
-model, daily token mix, cache hit rate, top tools, top projects,
-context-window distribution. No terminal-table fallbacks; the graphs say
-more in less space.
+model, daily token mix, cache hit rate, top tools, top skills grouped by
+plugin, top projects, context-window distribution. No terminal-table
+fallbacks; the graphs say more in less space.
 
 ### battery-stats
 
@@ -139,8 +139,8 @@ aren't tracked in git.
 | File | Role |
 |---|---|
 | `claude-stats/bin/ingest-daily.sh` | runs `npx ccusage daily --json`, upserts into `daily_usage` (PK: `date,model`) |
-| `claude-stats/bin/ingest-sessions.py` | walks `~/.claude/projects/**/*.jsonl`, parses tool-use events + usage, writes `conversations`, `conversation_tool_usage`, `project_usage` |
-| `claude-stats/bin/cleanup-old.sh` | 365-day retention across all four tables |
+| `claude-stats/bin/ingest-sessions.py` | walks `~/.claude/projects/**/*.jsonl`, parses tool-use events + usage, writes `conversations`, `conversation_tool_usage`, `conversation_skill_usage`, `project_usage` |
+| `claude-stats/bin/cleanup-old.sh` | 365-day retention across all five tables |
 | `claude-stats/bin/build-dashboard.sh` | emits self-contained `/tmp/claude-stats-dashboard.html` (Plotly via CDN, AMOLED theme) |
 | `claude-stats/fish/claude-stats.fish` | CLI wrapper: `dashboard` (interactive HTML), `ingest`, `ingest-sessions`, `raw <SQL>` (debug-only escape hatch) |
 

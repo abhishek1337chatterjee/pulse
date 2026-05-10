@@ -76,8 +76,9 @@ systemctl --user start claude-stats-ingest.service</code></pre>
         <p style="color:var(--fg-dim);font-size:13px;">
             Your fish <code>claude-clean</code> function runs
             <code>ingest-sessions.py</code> as the first step before any per-project
-            deletion. So the DuckDB <code>conversations</code> table outlives the
-            JSONL files.
+            deletion. So <code>conversations</code>, <code>conversation_tool_usage</code>,
+            and <code>conversation_skill_usage</code> all outlive the JSONL files —
+            skill-name attribution is captured permanently before transcripts disappear.
         </p>
     </section>
 

@@ -5,7 +5,7 @@ Sources:
   - JSONL files at ~/.claude/projects/*/*.jsonl  (per-conversation detail)
   - `ccusage session --json`                     (per-project cost totals)
 
-Writes: conversations, conversation_tool_usage, project_usage.
+Writes: conversations, conversation_tool_usage, conversation_skill_usage, project_usage.
 Idempotent via INSERT OR REPLACE.
 """
 
@@ -51,6 +51,7 @@ def parse_jsonl(path: Path):
     max_ctx = 0
     max_ctx_model = ""
     tools: Counter = Counter()
+    skills: Counter = Counter()
 
     try:
         with path.open(errors="replace") as f:
@@ -100,6 +101,10 @@ def parse_jsonl(path: Path):
                                 name = block.get("name") or "unknown"
                                 tools[name] += 1
                                 n_tool_calls += 1
+                                if name == "Skill":
+                                    skill_name = (block.get("input") or {}).get("skill")
+                                    if skill_name:
+                                        skills[skill_name] += 1
     except OSError as e:
         print(f"[ingest-sessions] skip {path}: {e}", file=sys.stderr)
         return None
@@ -123,7 +128,7 @@ def parse_jsonl(path: Path):
         "model": max_ctx_model,
         "summary": (summary or "")[:500],
     }
-    return conv, list(tools.items())
+    return conv, list(tools.items()), list(skills.items())
 
 
 def fetch_ccusage_session():
@@ -197,6 +202,14 @@ SELECT * FROM read_csv('{tmpdir}/tools.csv',
 INSERT OR REPLACE INTO conversation_tool_usage (session_id, tool_name, call_count)
 SELECT session_id, tool_name, call_count FROM staging_tools;
 
+CREATE OR REPLACE TEMP TABLE staging_skills AS
+SELECT * FROM read_csv('{tmpdir}/skills.csv',
+  header=false,
+  columns={{'session_id':'VARCHAR','skill_name':'VARCHAR','call_count':'INTEGER'}});
+
+INSERT OR REPLACE INTO conversation_skill_usage (session_id, skill_name, call_count)
+SELECT session_id, skill_name, call_count FROM staging_skills;
+
 CREATE OR REPLACE TEMP TABLE staging_proj AS
 SELECT * FROM read_csv('{tmpdir}/projects.csv',
   header=false,
@@ -216,6 +229,7 @@ FROM staging_proj;
 
 SELECT '[ingest-sessions] conversations: ' || (SELECT COUNT(*) FROM staging_conv)
     || ' / tool rows: ' || (SELECT COUNT(*) FROM staging_tools)
+    || ' / skill rows: ' || (SELECT COUNT(*) FROM staging_skills)
     || ' / projects: ' || (SELECT COUNT(*) FROM staging_proj) AS msg;
 """
     proc = subprocess.run(
@@ -235,16 +249,20 @@ def main():
 
     tmpdir = Path(tempfile.mkdtemp(prefix="claude-stats-"))
     try:
-        conv_rows, tool_rows = [], []
+        conv_rows, tool_rows, skill_rows = [], [], []
         for jsonl in sorted(PROJECTS.rglob("*.jsonl")):
             result = parse_jsonl(jsonl)
             if not result:
                 continue
-            conv, tools = result
+            conv, tools, skills = result
             conv_rows.append(conv)
             for tool_name, count in tools:
                 tool_rows.append(
                     {"session_id": conv["session_id"], "tool_name": tool_name, "call_count": count}
+                )
+            for skill_name, count in skills:
+                skill_rows.append(
+                    {"session_id": conv["session_id"], "skill_name": skill_name, "call_count": count}
                 )
 
         write_csv(
@@ -255,6 +273,7 @@ def main():
             tmpdir / "conversations.csv",
         )
         write_csv(tool_rows, ["session_id", "tool_name", "call_count"], tmpdir / "tools.csv")
+        write_csv(skill_rows, ["session_id", "skill_name", "call_count"], tmpdir / "skills.csv")
         write_csv(
             fetch_ccusage_session(),
             ["project_path", "last_activity", "input_tokens", "output_tokens",
