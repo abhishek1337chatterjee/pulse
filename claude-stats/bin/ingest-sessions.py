@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Ingest Claude Code session data into the local DuckDB.
 
-Sources:
-  - JSONL files at ~/.claude/projects/*/*.jsonl  (per-conversation detail)
-  - `ccusage session --json`                     (per-project cost totals)
+Source: JSONL files at ~/.claude/projects/*/*.jsonl  (per-conversation detail).
 
-Writes: conversations, conversation_tool_usage, conversation_skill_usage, project_usage.
+Writes: conversations, conversation_tool_usage, conversation_skill_usage.
 Idempotent via INSERT OR REPLACE.
+
+(Per-project cost lives in `project_daily_usage`, populated by ingest-daily.sh
+from `ccusage daily --instances --breakdown --json` — that table is the source
+of truth for the dashboard's "Top projects" panel.)
 """
 
 import csv
@@ -131,39 +133,6 @@ def parse_jsonl(path: Path):
     return conv, list(tools.items()), list(skills.items())
 
 
-def fetch_ccusage_session():
-    try:
-        proc = subprocess.run(
-            ["npx", "--yes", "ccusage@latest", "session", "--json"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
-        print(f"[ingest-sessions] ccusage failed: {e}", file=sys.stderr)
-        return []
-
-    try:
-        data = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return []
-
-    return [
-        {
-            "project_path": s.get("sessionId") or "",
-            "last_activity": s.get("lastActivity") or "",
-            "input_tokens": s.get("inputTokens") or 0,
-            "output_tokens": s.get("outputTokens") or 0,
-            "cache_creation_tokens": s.get("cacheCreationTokens") or 0,
-            "cache_read_tokens": s.get("cacheReadTokens") or 0,
-            "total_cost": s.get("totalCost") or 0,
-            "models_used": ", ".join(sorted(s.get("modelsUsed") or [])),
-        }
-        for s in data.get("sessions", [])
-    ]
-
-
 def write_csv(rows, columns, path):
     with open(path, "w", newline="") as f:
         w = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
@@ -210,27 +179,9 @@ SELECT * FROM read_csv('{tmpdir}/skills.csv',
 INSERT OR REPLACE INTO conversation_skill_usage (session_id, skill_name, call_count)
 SELECT session_id, skill_name, call_count FROM staging_skills;
 
-CREATE OR REPLACE TEMP TABLE staging_proj AS
-SELECT * FROM read_csv('{tmpdir}/projects.csv',
-  header=false,
-  columns={{
-    'project_path':'VARCHAR','last_activity':'DATE',
-    'input_tokens':'BIGINT','output_tokens':'BIGINT',
-    'cache_creation_tokens':'BIGINT','cache_read_tokens':'BIGINT',
-    'total_cost':'DOUBLE','models_used':'VARCHAR'
-  }});
-
-INSERT OR REPLACE INTO project_usage
-  (project_path, last_activity, input_tokens, output_tokens,
-   cache_creation_tokens, cache_read_tokens, total_cost, models_used, ingested_at)
-SELECT project_path, last_activity, input_tokens, output_tokens,
-       cache_creation_tokens, cache_read_tokens, total_cost, models_used, CURRENT_TIMESTAMP
-FROM staging_proj;
-
 SELECT '[ingest-sessions] conversations: ' || (SELECT COUNT(*) FROM staging_conv)
     || ' / tool rows: ' || (SELECT COUNT(*) FROM staging_tools)
-    || ' / skill rows: ' || (SELECT COUNT(*) FROM staging_skills)
-    || ' / projects: ' || (SELECT COUNT(*) FROM staging_proj) AS msg;
+    || ' / skill rows: ' || (SELECT COUNT(*) FROM staging_skills) AS msg;
 """
     proc = subprocess.run(
         [str(DUCKDB), str(DB)], input=sql, text=True, capture_output=True
@@ -274,12 +225,6 @@ def main():
         )
         write_csv(tool_rows, ["session_id", "tool_name", "call_count"], tmpdir / "tools.csv")
         write_csv(skill_rows, ["session_id", "skill_name", "call_count"], tmpdir / "skills.csv")
-        write_csv(
-            fetch_ccusage_session(),
-            ["project_path", "last_activity", "input_tokens", "output_tokens",
-             "cache_creation_tokens", "cache_read_tokens", "total_cost", "models_used"],
-            tmpdir / "projects.csv",
-        )
         duckdb_load(str(tmpdir))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)

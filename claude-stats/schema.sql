@@ -13,19 +13,6 @@ CREATE TABLE IF NOT EXISTS daily_usage (
 CREATE INDEX IF NOT EXISTS idx_daily_usage_date ON daily_usage(date);
 CREATE INDEX IF NOT EXISTS idx_daily_usage_model ON daily_usage(model);
 
--- v2: per-project totals from `ccusage session --json` (sessionId = project path key)
-CREATE TABLE IF NOT EXISTS project_usage (
-    project_path VARCHAR PRIMARY KEY,
-    last_activity DATE,
-    input_tokens BIGINT NOT NULL DEFAULT 0,
-    output_tokens BIGINT NOT NULL DEFAULT 0,
-    cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
-    cache_read_tokens BIGINT NOT NULL DEFAULT 0,
-    total_cost DOUBLE NOT NULL DEFAULT 0.0,
-    models_used VARCHAR,
-    ingested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
 -- v2: one row per .jsonl file (main conversation OR subagent transcript)
 CREATE TABLE IF NOT EXISTS conversations (
     session_id VARCHAR PRIMARY KEY,

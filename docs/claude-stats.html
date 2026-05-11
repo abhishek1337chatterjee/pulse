@@ -162,8 +162,9 @@ SELECT date, model, input_tokens, output_tokens,
         <p class="lead">
             Walks every <code>.jsonl</code> conversation transcript under
             <code>~/.claude/projects/</code>, parses message events &amp;
-            tool-use blocks, then UPSERTs into three tables. Also pulls
-            per-project cost totals from <code>ccusage session --json</code>.
+            tool-use blocks, then UPSERTs into three tables. Per-project cost
+            now lives in <code>project_daily_usage</code> (populated by
+            <code>ingest-daily.sh</code>); this script no longer touches cost.
         </p>
 
         <div class="flow">
@@ -173,7 +174,7 @@ SELECT date, model, input_tokens, output_tokens,
             <div class="arrow">→</div>
             <div class="box"><div class="label">parse</div>per-line JSON<br><span style="color:var(--fg-muted)">count msgs, tools, ctx</span></div>
             <div class="arrow">→</div>
-            <div class="box purple"><div class="label">stage</div>3 CSVs in /tmp<br><span style="color:var(--fg-muted)">conv / tools / projects</span></div>
+            <div class="box purple"><div class="label">stage</div>3 CSVs in /tmp<br><span style="color:var(--fg-muted)">conv / tools / skills</span></div>
             <div class="arrow">→</div>
             <div class="box good"><div class="label">load</div>DuckDB<br><span style="color:var(--fg-muted)">3× INSERT OR REPLACE</span></div>
         </div>
@@ -206,7 +207,6 @@ SELECT date, model, input_tokens, output_tokens,
             <li><strong>conversation_tool_usage</strong> — one row per (session, tool); aggregated <code>call_count</code></li>
             <li><strong>conversation_skill_usage</strong> — one row per (session, skill); skill names are <code>&lt;plugin&gt;:&lt;name&gt;</code> for plugin-namespaced skills, or bare <code>&lt;name&gt;</code> for personal skills</li>
             <li><strong>project_daily_usage</strong> (v4) — per-(project_path, date, model) cost from <code>ccusage daily --instances --breakdown --json</code>, populated alongside <code>daily_usage</code> in the same <code>ingest-daily.sh</code> run. Same 8-day rolling-rewrite discipline: rows older than 8 days are immutable. Sums to <code>daily_usage</code> exactly for any (date, model) where ccusage could see the JSONLs at ingest time. The dashboard's "Top projects" panel windows over this table.</li>
-            <li><strong>project_usage</strong> (legacy) — per-project lifetime totals from <code>ccusage session --json</code>, upserted by <code>project_path</code>. Replaced by <code>project_daily_usage</code> for the dashboard panel because session-based attribution is amnesic across <code>claude-clean</code> (each ingest can shrink a row to whatever new activity remains). Kept on disk for now; no panel reads from it.</li>
         </ul>
 
         <div class="callout">
@@ -297,6 +297,19 @@ SELECT date, model, input_tokens, output_tokens,
             </tbody>
         </table>
 
+        <h3>project_daily_usage <span class="badge subtle">populated by ingest-daily.sh (--instances)</span></h3>
+        <table class="schema">
+            <thead><tr><th>column</th><th>type</th><th>notes</th></tr></thead>
+            <tbody>
+                <tr><td class="col">project_path</td><td class="type">VARCHAR</td><td class="note">Slugified project dir; PK component (matches <code>conversations.project_path</code>)</td></tr>
+                <tr><td class="col">date</td><td class="type">DATE</td><td class="note">Day of usage; PK component</td></tr>
+                <tr><td class="col">model</td><td class="type">VARCHAR</td><td class="note">PK component</td></tr>
+                <tr><td class="col">input/output/cache_*_tokens</td><td class="type">BIGINT</td><td class="note">Per (project, date, model) totals</td></tr>
+                <tr><td class="col">cost</td><td class="type">DOUBLE</td><td class="note">USD; <code>SUM</code> over project_path = <code>daily_usage.cost</code> for the same (date, model) when ccusage could see the JSONLs at ingest time</td></tr>
+                <tr><td class="col">ingested_at</td><td class="type">TIMESTAMP</td><td class="note">Last UPSERT time (UTC)</td></tr>
+            </tbody>
+        </table>
+
         <h3>conversations <span class="badge subtle">one row per JSONL transcript</span></h3>
         <table class="schema">
             <thead><tr><th>column</th><th>type</th><th>notes</th></tr></thead>
@@ -333,17 +346,6 @@ SELECT date, model, input_tokens, output_tokens,
             </tbody>
         </table>
 
-        <h3>project_usage <span class="badge subtle">from ccusage session --json</span></h3>
-        <table class="schema">
-            <thead><tr><th>column</th><th>type</th><th>notes</th></tr></thead>
-            <tbody>
-                <tr><td class="col">project_path</td><td class="type">VARCHAR</td><td class="note">PK; ccusage's <code>sessionId</code></td></tr>
-                <tr><td class="col">last_activity</td><td class="type">DATE</td><td class="note">Most recent activity date</td></tr>
-                <tr><td class="col">input/output/cache_*_tokens</td><td class="type">BIGINT</td><td class="note">Lifetime per-project totals</td></tr>
-                <tr><td class="col">total_cost</td><td class="type">DOUBLE</td><td class="note">USD over the project's lifetime</td></tr>
-                <tr><td class="col">models_used</td><td class="type">VARCHAR</td><td class="note">Comma-separated</td></tr>
-            </tbody>
-        </table>
     </section>
 
     <footer>
