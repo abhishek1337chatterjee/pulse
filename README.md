@@ -138,9 +138,9 @@ aren't tracked in git.
 
 | File | Role |
 |---|---|
-| `claude-stats/bin/ingest-daily.sh` | runs `npx ccusage daily --json`, upserts into `daily_usage` (PK: `date,model`) |
-| `claude-stats/bin/ingest-sessions.py` | walks `~/.claude/projects/**/*.jsonl`, parses tool-use events + usage, writes `conversations`, `conversation_tool_usage`, `conversation_skill_usage`, `project_usage` |
-| `claude-stats/bin/cleanup-old.sh` | 365-day retention across all five tables |
+| `claude-stats/bin/ingest-daily.sh` | runs `npx ccusage daily --json` twice (plain + `--instances --breakdown`), upserts into `daily_usage` (PK: `date,model`) and `project_daily_usage` (PK: `project_path,date,model`). Both share an 8-day rolling-rewrite window so older rows are immutable; `project_daily_usage` rolled up sums to `daily_usage` to the cent. |
+| `claude-stats/bin/ingest-sessions.py` | walks `~/.claude/projects/**/*.jsonl`, parses tool-use events + usage, writes `conversations`, `conversation_tool_usage`, `conversation_skill_usage`. Also writes legacy `project_usage` from `ccusage session --json` (lifetime per-project totals; no panel reads from it — kept for now). |
+| `claude-stats/bin/cleanup-old.sh` | 365-day retention across all six data tables |
 | `claude-stats/bin/build-dashboard.sh` | emits self-contained `/tmp/claude-stats-dashboard.html` (Plotly via CDN, AMOLED theme) |
 | `claude-stats/fish/claude-stats.fish` | CLI wrapper: `dashboard` (interactive HTML), `ingest`, `ingest-sessions`, `raw <SQL>` (debug-only escape hatch) |
 

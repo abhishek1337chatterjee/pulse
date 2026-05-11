@@ -132,9 +132,22 @@ TOP_SKILLS=$(q "
     LIMIT 20;
 ")
 
-# top repos by cost
+# top repos by cost — windowed, using project_daily_usage which mirrors daily_usage's
+# write semantics with a project_path dimension. Sums to daily_usage exactly for any
+# date ccusage could see at ingest time. Days with no project_daily_usage rows show up
+# as the "unattributed" gap below (= JSONLs cleaned before they were captured here).
 TOP_REPOS=$(q "
-    WITH conv AS (
+    WITH proj_costs AS (
+        SELECT
+            project_path,
+            SUM(cost)                          AS cost,
+            MAX(date)                          AS last_activity,
+            STRING_AGG(DISTINCT model, ', ')   AS models_used
+        FROM project_daily_usage
+        WHERE date >= CURRENT_DATE - INTERVAL $DAYS DAY
+        GROUP BY project_path
+    ),
+    conv AS (
         SELECT
             project_path,
             MAX(cwd) AS cwd,
@@ -142,20 +155,33 @@ TOP_REPOS=$(q "
             COUNT(*) FILTER (WHERE kind = 'subagent') AS n_subagent,
             SUM(n_tool_calls)                         AS total_tool_calls
         FROM conversations
+        WHERE started_at >= CURRENT_DATE - INTERVAL $DAYS DAY
         GROUP BY project_path
     )
     SELECT
         COALESCE(NULLIF(c.cwd, ''), p.project_path) AS path,
-        ROUND(p.total_cost, 2) AS cost,
+        ROUND(p.cost, 2)         AS cost,
         p.last_activity::VARCHAR AS last_activity,
         c.n_main,
         c.n_subagent,
         c.total_tool_calls,
         p.models_used
-    FROM project_usage p
+    FROM proj_costs p
     LEFT JOIN conv c USING (project_path)
-    ORDER BY p.total_cost DESC
+    ORDER BY p.cost DESC
     LIMIT 12;
+")
+
+# attribution gap for the window — daily_usage is the truth; project_daily_usage
+# is what we could attribute. Difference = JSONLs deleted before capture.
+ATTRIBUTION=$(q "
+    WITH d AS (SELECT COALESCE(SUM(cost), 0) AS total FROM daily_usage         WHERE date >= CURRENT_DATE - INTERVAL $DAYS DAY),
+         p AS (SELECT COALESCE(SUM(cost), 0) AS attributed FROM project_daily_usage WHERE date >= CURRENT_DATE - INTERVAL $DAYS DAY)
+    SELECT
+        ROUND((SELECT total      FROM d), 2) AS total,
+        ROUND((SELECT attributed FROM p), 2) AS attributed,
+        ROUND((SELECT total FROM d) - (SELECT attributed FROM p), 2) AS unattributed,
+        ROUND(100.0 * (SELECT attributed FROM p) / NULLIF((SELECT total FROM d), 0), 0) AS attributed_pct;
 ")
 
 # context-window fullness across main sessions in window
@@ -210,6 +236,13 @@ SESSIONS=$(q "
 ")
 
 GENERATED_AT=$(TZ=Asia/Kolkata date "+%Y-%m-%d %H:%M:%S IST")
+
+# Pull attribution scalars out of the ATTRIBUTION JSON for header substitution.
+# Defaults guard against an empty window (no rows).
+ATTR_TOTAL=$(printf '%s' "$ATTRIBUTION"        | jq -r '.[0].total        // 0')
+ATTR_ATTRIBUTED=$(printf '%s' "$ATTRIBUTION"   | jq -r '.[0].attributed   // 0')
+ATTR_UNATTRIBUTED=$(printf '%s' "$ATTRIBUTION" | jq -r '.[0].unattributed // 0')
+ATTR_PCT=$(printf '%s' "$ATTRIBUTION"          | jq -r '.[0].attributed_pct // 100')
 
 # ---- emit HTML ----
 cat > "$OUT" <<'HEAD_EOF'
@@ -454,7 +487,8 @@ cat >> "$OUT" <<HEADER_EOF
 
 <div class="row-3">
     <div class="panel">
-        <h2>Top projects by total cost</h2>
+        <h2>Top projects in last $DAYS days</h2>
+        <div class="sub" style="margin: -8px 0 8px; color: var(--fg-dim); font-size: 12px;">\$$ATTR_ATTRIBUTED of \$$ATTR_TOTAL attributed (${ATTR_PCT}%) &middot; \$$ATTR_UNATTRIBUTED unattributable (cleaned/missing JSONLs)</div>
         <div id="chart-repos" class="chart chart-tall"></div>
     </div>
     <div class="panel">
@@ -504,6 +538,7 @@ printf '    cacheTrend: %s,\n'   "$CACHE_TREND"  >> "$OUT"
 printf '    topTools: %s,\n'     "$TOP_TOOLS"    >> "$OUT"
 printf '    topSkills: %s,\n'    "$TOP_SKILLS"   >> "$OUT"
 printf '    topRepos: %s,\n'     "$TOP_REPOS"    >> "$OUT"
+printf '    attribution: %s,\n'  "$ATTRIBUTION"  >> "$OUT"
 printf '    contextDist: %s,\n'  "$CONTEXT_DIST" >> "$OUT"
 printf '    sessions: %s,\n'     "$SESSIONS"     >> "$OUT"
 

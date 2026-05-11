@@ -15,7 +15,9 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 SINCE="${1:-$(date -d '8 days ago' +%Y%m%d)}"
 CSV="${TMPDIR}/usage.csv"
+PROJ_CSV="${TMPDIR}/projects.csv"
 
+# (1) per-(date, model) totals  — feeds daily_usage
 npx --yes ccusage@latest daily --since "$SINCE" --json \
   | jq -r '
       .daily[] as $d
@@ -32,8 +34,31 @@ npx --yes ccusage@latest daily --since "$SINCE" --json \
       | @csv
     ' > "$CSV"
 
+# (2) per-(project, date, model) breakdown — feeds project_daily_usage.
+# Uses --instances to add the project_path dimension. Project_path is the
+# ccusage instance key (matches project_path in conversations / project_usage).
+npx --yes ccusage@latest daily --since "$SINCE" --instances --breakdown --json \
+  | jq -r '
+      .projects
+      | to_entries[] as $p
+      | $p.value[] as $d
+      | $d.modelBreakdowns[] as $m
+      | [
+          $p.key,
+          $d.date,
+          $m.modelName,
+          ($m.inputTokens // 0),
+          ($m.outputTokens // 0),
+          ($m.cacheCreationTokens // 0),
+          ($m.cacheReadTokens // 0),
+          ($m.cost // 0)
+        ]
+      | @csv
+    ' > "$PROJ_CSV"
+
 ROWS=$(wc -l < "$CSV")
-if [[ "$ROWS" -eq 0 ]]; then
+PROJ_ROWS=$(wc -l < "$PROJ_CSV")
+if [[ "$ROWS" -eq 0 && "$PROJ_ROWS" -eq 0 ]]; then
   echo "[ingest] no rows from ccusage since $SINCE — nothing to do"
   exit 0
 fi
@@ -58,7 +83,28 @@ INSERT OR REPLACE INTO daily_usage
 SELECT date, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cost, CURRENT_TIMESTAMP
 FROM staging;
 
+CREATE OR REPLACE TEMP TABLE staging_proj AS
+SELECT * FROM read_csv('$PROJ_CSV',
+  header=false,
+  columns={
+    'project_path': 'VARCHAR',
+    'date': 'DATE',
+    'model': 'VARCHAR',
+    'input_tokens': 'BIGINT',
+    'output_tokens': 'BIGINT',
+    'cache_creation_tokens': 'BIGINT',
+    'cache_read_tokens': 'BIGINT',
+    'cost': 'DOUBLE'
+  }
+);
+
+INSERT OR REPLACE INTO project_daily_usage
+  (project_path, date, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cost, ingested_at)
+SELECT project_path, date, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cost, CURRENT_TIMESTAMP
+FROM staging_proj;
+
 SELECT
-  '[ingest] upserted ' || COUNT(*) || ' rows (since $SINCE)' AS msg
-FROM staging;
+  '[ingest] upserted ' || (SELECT COUNT(*) FROM staging)
+  || ' daily rows + ' || (SELECT COUNT(*) FROM staging_proj)
+  || ' project-day rows (since $SINCE)' AS msg;
 SQL

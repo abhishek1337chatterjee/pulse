@@ -69,3 +69,23 @@ CREATE TABLE IF NOT EXISTS conversation_skill_usage (
 );
 
 CREATE INDEX IF NOT EXISTS idx_skill_usage_skill ON conversation_skill_usage(skill_name);
+
+-- v4: per-(project, date, model) cost breakdown from `ccusage daily --instances --breakdown --json`.
+-- Mirrors daily_usage's write semantics: INSERT OR REPLACE on the rolling 8-day window driven by
+-- ingest-daily.sh; rows older than 8 days are immutable. Adds project_path so per-project cost
+-- can be windowed AND reconciled against daily_usage to the cent (sum over project_path = daily row).
+CREATE TABLE IF NOT EXISTS project_daily_usage (
+    project_path VARCHAR NOT NULL,
+    date         DATE    NOT NULL,
+    model        VARCHAR NOT NULL,
+    input_tokens          BIGINT NOT NULL DEFAULT 0,
+    output_tokens         BIGINT NOT NULL DEFAULT 0,
+    cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
+    cache_read_tokens     BIGINT NOT NULL DEFAULT 0,
+    cost         DOUBLE  NOT NULL DEFAULT 0.0,
+    ingested_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (project_path, date, model)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_daily_usage_date         ON project_daily_usage(date);
+CREATE INDEX IF NOT EXISTS idx_project_daily_usage_project_path ON project_daily_usage(project_path);
