@@ -18,7 +18,9 @@ CSV="${TMPDIR}/usage.csv"
 PROJ_CSV="${TMPDIR}/projects.csv"
 
 # (1) per-(date, model) totals  — feeds daily_usage
-npx --yes ccusage@latest daily --since "$SINCE" --json \
+# ccusage v19 split agents under subcommands; top-level `daily` now aggregates
+# all agents and drops modelBreakdowns. `claude daily` preserves the legacy shape.
+npx --yes ccusage@latest claude daily --since "$SINCE" --json \
   | jq -r '
       .daily[] as $d
       | $d.modelBreakdowns[]
@@ -37,7 +39,7 @@ npx --yes ccusage@latest daily --since "$SINCE" --json \
 # (2) per-(project, date, model) breakdown — feeds project_daily_usage.
 # Uses --instances to add the project_path dimension. Project_path is the
 # ccusage instance key (matches project_path in conversations / project_usage).
-npx --yes ccusage@latest daily --since "$SINCE" --instances --breakdown --json \
+npx --yes ccusage@latest claude daily --since "$SINCE" --instances --breakdown --json \
   | jq -r '
       .projects
       | to_entries[] as $p

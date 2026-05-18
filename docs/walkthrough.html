@@ -1,0 +1,1644 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>pulse — architecture walkthrough</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="_styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+  <style>
+    /* page-scoped — walkthrough only */
+    .hero { padding: 32px 0 12px; }
+    .hero h1 { font-size: 32px; margin: 8px 0 8px; letter-spacing: -0.02em; }
+    .hero .lead { font-size: 17px; color: var(--fg); max-width: 760px; margin: 0; }
+    .hero .sub { color: var(--fg-dim); margin-top: 8px; max-width: 760px; }
+    .pill {
+      display: inline-block;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 4px 9px;
+      border-radius: 999px;
+      background: var(--primary-soft);
+      color: var(--primary);
+      border: 1px solid rgba(167, 139, 250, 0.25);
+      margin-right: 6px;
+    }
+    .pill.cyan { background: var(--secondary-soft); color: var(--secondary); border-color: rgba(34,211,238,0.25); }
+
+    section { padding-top: 24px; margin-top: 28px; border-top: 1px solid var(--border); scroll-margin-top: 12px; }
+    section.no-divider { border-top: none; margin-top: 18px; padding-top: 12px; }
+    section h2 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
+    section .meta { color: var(--fg-dim); font-size: 13px; margin: 0 0 14px; font-family: 'JetBrains Mono', ui-monospace, monospace; }
+    section .intro { color: var(--fg); max-width: 780px; margin: 0 0 18px; }
+
+    /* flow diagram — 5 stages, each stacked vertically (label + cs cell + bs cell).
+       Desktop = 5 cols across · laptop = 3 cols · tablet = 2 cols · phone = 1 col. */
+    .flow-wrap { padding: 18px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
+    .flow-stages {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .flow-stage { display: flex; flex-direction: column; gap: 10px; min-width: 0; position: relative; }
+    .flow-label {
+      font-size: 10px;
+      color: var(--fg-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 600;
+      text-align: center;
+      padding: 8px 10px;
+      background: var(--panel-2);
+      border: 1px dashed var(--border-strong);
+      border-radius: 8px;
+    }
+    .flow-node {
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border-strong);
+      background: var(--panel-2);
+      flex: 1;
+      display: flex; flex-direction: column;
+      min-width: 0;
+    }
+    .flow-node .role { font-size: 10px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+    .flow-node .name { font-weight: 600; color: var(--fg); font-size: 13.5px; line-height: 1.45; word-wrap: break-word; overflow-wrap: anywhere; }
+    .flow-node .name code { background: transparent; padding: 0; color: inherit; font-size: 12px; word-break: break-word; }
+    .flow-node.src   { border-color: rgba(34,211,238,0.35); background: var(--secondary-soft); }
+    .flow-node.proc  { border-color: rgba(167,139,250,0.35); background: var(--primary-soft); }
+    .flow-node.store { border-color: rgba(34,197,94,0.30); background: var(--good-soft); }
+    .flow-node.out   { border-color: rgba(245,158,11,0.30); background: var(--warn-soft); }
+    /* inter-stage arrows on desktop — drawn between columns */
+    .flow-stage:not(:last-child)::after {
+      content: '→';
+      position: absolute;
+      top: 18px;
+      right: -10px;
+      transform: translateX(50%);
+      color: var(--fg-dim);
+      font-size: 13px;
+      pointer-events: none;
+    }
+    /* laptop side-screen: 3 columns */
+    @media (max-width: 1200px) {
+      .flow-stages { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .flow-stage:nth-child(3n)::after,
+      .flow-stage:last-child::after { display: none; }
+    }
+    /* tablet: 2 columns */
+    @media (max-width: 800px) {
+      .flow-stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .flow-stage:nth-child(3n)::after { display: inline; }
+      .flow-stage:nth-child(2n)::after,
+      .flow-stage:last-child::after { display: none; }
+    }
+    /* phone: stack, arrow points down */
+    @media (max-width: 540px) {
+      .flow-stages { grid-template-columns: 1fr; gap: 18px; }
+      .flow-stage:not(:last-child)::after {
+        content: '↓';
+        top: auto;
+        bottom: -16px;
+        right: 50%;
+        transform: translateX(50%);
+        font-size: 16px;
+      }
+      .flow-stage:nth-child(n)::after { display: inline; }
+      .flow-stage:last-child::after { display: none; }
+    }
+
+    /* the side-by-side block */
+    .wb { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; margin: 18px 0; }
+    .wb .code-side { background: #0d0d10; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+    .wb .code-side .filename { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: var(--fg-dim); padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+    .wb .code-side .filename .range { color: var(--fg-muted); }
+    .wb .code-side pre[class*="language-"] { margin: 0; padding: 14px 16px; background: #0d0d10; font-size: 12.5px; line-height: 1.6; max-height: 520px; overflow: auto; }
+    .wb .why-side { padding: 14px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; font-size: 14px; color: var(--fg); line-height: 1.65; }
+    .wb .why-side h4 { margin: 0 0 8px; font-size: 11px; color: var(--primary); text-transform: uppercase; letter-spacing: 0.08em; }
+    .wb .why-side p { margin: 0 0 10px; }
+    .wb .why-side p:last-child { margin-bottom: 0; }
+    .wb .why-side strong { color: var(--fg); }
+    .wb .why-side code { background: rgba(167,139,250,0.10); color: var(--secondary); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+    @media (max-width: 1100px) { .wb { grid-template-columns: 1fr; } .wb .why-side { order: -1; } }
+
+    .callout { background: var(--warn-soft); border: 1px solid rgba(245,158,11,0.30); border-radius: 10px; padding: 12px 16px; font-size: 14px; margin: 14px 0; }
+    .callout strong { color: var(--warn); }
+    .callout code { background: rgba(245,158,11,0.10); color: var(--warn); padding: 1px 5px; border-radius: 4px; }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+    .grid-2 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+    .grid-2 .card h5 { margin: 0 0 6px; color: var(--primary); font-size: 13px; font-weight: 600; }
+    .grid-2 .card p { margin: 0; font-size: 14px; color: var(--fg); line-height: 1.6; }
+    .grid-2 .card code { background: rgba(167,139,250,0.10); color: var(--secondary); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+
+    .controls { display: flex; gap: 10px; margin: 22px 0 6px; align-items: center; }
+    .controls button { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; background: var(--panel); color: var(--fg); border: 1px solid var(--border-strong); padding: 6px 11px; border-radius: 6px; cursor: pointer; }
+    .controls button:hover { background: var(--panel-hover); }
+    .controls .count { color: var(--fg-dim); font-size: 12px; margin-left: auto; }
+
+    details.script {
+      margin: 16px 0 24px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    details.script > summary {
+      cursor: pointer;
+      padding: 14px 18px;
+      list-style: none;
+      display: flex; gap: 12px; align-items: center;
+      background: var(--panel);
+    }
+    details.script[open] > summary { border-bottom: 1px solid var(--border); }
+    details.script > summary::-webkit-details-marker { display: none; }
+    details.script > summary .chev { color: var(--fg-dim); transition: transform 200ms ease; display: inline-block; }
+    details.script[open] > summary .chev { transform: rotate(90deg); color: var(--primary); }
+    details.script > summary .fname { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px; color: var(--fg); }
+    details.script > summary .desc { color: var(--fg-dim); font-size: 13px; margin-left: auto; text-align: right; }
+    details.script .body { padding: 6px 18px 18px; }
+
+    /* Prism overrides — keep dark, fit theme */
+    pre[class*="language-"] { background: #0d0d10 !important; text-shadow: none !important; }
+    code[class*="language-"], pre[class*="language-"] { font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace !important; }
+    .token.comment, .token.prolog, .token.doctype, .token.cdata { color: #6b7280 !important; font-style: italic; }
+    .token.keyword, .token.tag { color: #c084fc !important; }
+    .token.string, .token.attr-value { color: #86efac !important; }
+    .token.number, .token.boolean { color: #fbbf24 !important; }
+    .token.function, .token.class-name { color: #67e8f9 !important; }
+    .token.operator, .token.punctuation { color: #94a3b8 !important; }
+    .token.variable, .token.parameter { color: #f0abfc !important; }
+    .token.builtin { color: #a78bfa !important; }
+
+    .skipped { color: var(--fg-dim); font-size: 13px; padding: 10px 14px; border-left: 2px solid var(--border-strong); margin: 8px 0 4px; font-style: italic; }
+
+    h3.subhead { font-size: 16px; color: var(--fg); margin: 26px 0 4px; letter-spacing: -0.01em; }
+    h3.subhead .what { color: var(--fg-dim); font-weight: 400; font-size: 13.5px; margin-left: 8px; font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  </style>
+</head>
+<body data-page="walkthrough">
+  <div class="layout">
+    <nav class="toc" id="toc"></nav>
+    <main class="content" style="padding: 28px 36px 80px;">
+
+      <div class="hero">
+        <span class="pill">walkthrough</span>
+        <span class="pill cyan">for understanding</span>
+        <h1>pulse: how the whole thing works</h1>
+        <p class="lead">A line-by-line tour of the two local CLIs — <strong>claude-stats</strong> and <strong>battery-stats</strong> — showing what each block does and <em>why</em>.</p>
+        <p class="sub">Two small projects, identical shape: <strong>collect → store → derive → render</strong>. Read in order, or jump to a script via the sidebar.</p>
+      </div>
+
+      <section class="no-divider" id="flow">
+        <h2>The data flow at a glance</h2>
+        <p class="intro">Both projects follow the same five stages. Read across each row to compare claude-stats with battery-stats — same skeleton, different sources.</p>
+
+        <div class="flow-wrap">
+          <div class="flow-stages">
+            <div class="flow-stage">
+              <div class="flow-label">stage 1 · source</div>
+              <div class="flow-node src">
+                <div class="role">claude-stats</div>
+                <div class="name"><code>ccusage claude daily</code><br>+ <code>~/.claude/projects/*.jsonl</code></div>
+              </div>
+              <div class="flow-node src">
+                <div class="role">battery-stats</div>
+                <div class="name"><code>/sys/class/power_supply</code><br>+ <code>/var/lib/upower</code><br>+ <code>powertop</code> (manual)</div>
+              </div>
+            </div>
+            <div class="flow-stage">
+              <div class="flow-label">stage 2 · ingest</div>
+              <div class="flow-node proc">
+                <div class="role">claude-stats</div>
+                <div class="name"><code>ingest-daily.sh</code><br><code>ingest-sessions.py</code></div>
+              </div>
+              <div class="flow-node proc">
+                <div class="role">battery-stats</div>
+                <div class="name"><code>poll.sh</code> (5 min)<br><code>ingest-upower.sh</code><br><code>powertop-capture.sh</code></div>
+              </div>
+            </div>
+            <div class="flow-stage">
+              <div class="flow-label">stage 3 · store</div>
+              <div class="flow-node store">
+                <div class="role">claude-stats</div>
+                <div class="name"><code>claude.duckdb</code></div>
+              </div>
+              <div class="flow-node store">
+                <div class="role">battery-stats</div>
+                <div class="name"><code>battery.duckdb</code></div>
+              </div>
+            </div>
+            <div class="flow-stage">
+              <div class="flow-label">stage 4 · derive</div>
+              <div class="flow-node proc">
+                <div class="role">claude-stats</div>
+                <div class="name">SQL inside <code>build-dashboard.sh</code></div>
+              </div>
+              <div class="flow-node proc">
+                <div class="role">battery-stats</div>
+                <div class="name"><code>aggregate-daily.sh</code> (sessions + daily roll-up + health)</div>
+              </div>
+            </div>
+            <div class="flow-stage">
+              <div class="flow-label">stage 5 · render</div>
+              <div class="flow-node out">
+                <div class="role">claude-stats</div>
+                <div class="name"><code>claude-stats-dashboard.html</code><br>(Plotly via CDN)</div>
+              </div>
+              <div class="flow-node out">
+                <div class="role">battery-stats</div>
+                <div class="name"><code>battery-stats-dashboard.html</code><br>(Plotly via CDN)</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="shape">
+        <h2>The shared shape — six principles</h2>
+        <p class="intro">Why both projects look the same isn't accidental. These six choices show up in every file:</p>
+        <div class="grid-2">
+          <div class="card">
+            <h5>DuckDB, not Postgres or SQLite</h5>
+            <p>Single file, embedded, no daemon. SQL feels like Postgres (window functions, CTEs, <code>AT TIME ZONE</code>). Scans 50k rows in &lt;1 ms. Backup = <code>cp</code>. Reset = <code>rm</code>.</p>
+          </div>
+          <div class="card">
+            <h5>Raw + derived, never just derived</h5>
+            <p>Ingesters write rows that map 1:1 with their source. Roll-ups are pure SQL on top of those rows — re-derivable any time. If a derivation rule changes (e.g. the phantom-session filter), only the aggregator changes; no backfill needed.</p>
+          </div>
+          <div class="card">
+            <h5>Self-contained HTML dashboards</h5>
+            <p>No web server, no build step, no JS framework. <code>build-dashboard.sh</code> queries DuckDB, embeds the result as a <code>const DATA = {…}</code> blob, ships it with Plotly via CDN. Open in browser. Done.</p>
+          </div>
+          <div class="card">
+            <h5>systemd user timers with <code>Persistent=true</code></h5>
+            <p>Laptop suspended at 02:00? Missed runs fire on next boot. No <code>cron</code>, no fragile PATH-from-cron hacks, no missed days.</p>
+          </div>
+          <div class="card">
+            <h5>Naive UTC in, IST out</h5>
+            <p>Every timestamp is stored as a naive <code>TIMESTAMP</code> in UTC. Display queries wrap with <code>(col AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'</code>. A <em>single</em> <code>AT TIME ZONE</code> silently no-ops — a real bug that bit once and shaped the rule.</p>
+          </div>
+          <div class="card">
+            <h5>Symlink install</h5>
+            <p>Source of truth = the pulse git repo. <code>install.sh</code> symlinks each <code>bin/</code>, <code>fish/</code>, <code>systemd/</code> file into the live locations. <code>git pull</code> = instant deploy. DBs live outside the repo and are gitignored.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="controls">
+        <button id="expand-all">expand all</button>
+        <button id="collapse-all">collapse all</button>
+        <span class="count">claude-stats: 4 scripts + schema · battery-stats: 5 scripts + schema</span>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- claude-stats                                                  -->
+      <!-- ============================================================ -->
+
+      <section id="cs-ingest-daily">
+        <h2>claude-stats · ingest-daily.sh</h2>
+        <p class="meta">~/Documents/pulse/claude-stats/bin/ingest-daily.sh · 113 lines · bash</p>
+        <p class="intro">The cost ingester. Asks <code>ccusage</code> for the last 8 days of Claude Code usage, reshapes the JSON with <code>jq</code>, and upserts into two DuckDB tables. Run nightly by systemd; rolling-rewrite window means old rows are immutable.</p>
+
+        <details class="script" open>
+          <summary><span class="chev">▶</span><span class="fname">ingest-daily.sh</span><span class="desc">7 blocks · the cost pipeline</span></summary>
+          <div class="body">
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-daily.sh</span><span class="range">L1–L9 · setup</span></div>
+<pre><code class="language-bash">#!/usr/bin/env bash
+# Ingest Claude Code daily usage from ccusage into DuckDB.
+# Usage: ingest-daily.sh [SINCE_YYYYMMDD]
+# Default SINCE = 8 days ago (always keeps the recent week fresh).
+
+set -euo pipefail
+
+# Cron-safe PATH: jq lives in /usr/bin, npx in nvm
+export PATH="${HOME}/.nvm/versions/node/v24.14.1/bin:/usr/bin:/bin:${PATH:-}"</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p><code>set -euo pipefail</code> turns silent failures loud: <code>-e</code> exits on any error, <code>-u</code> on unset variables, <code>-o pipefail</code> on any pipe-segment failure. Without <code>pipefail</code>, <code>ccusage | jq …</code> would swallow ccusage crashes.</p>
+                <p>The <strong>PATH export</strong> exists because systemd timers inherit a minimal PATH. Without this, <code>npx</code> isn't found and the nightly job dies silently in journalctl.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-daily.sh</span><span class="range">L11–L18 · paths &amp; tempdir</span></div>
+<pre><code class="language-bash">DB="${HOME}/Documents/claude-stats/claude.duckdb"
+DUCKDB="${HOME}/.local/bin/duckdb"
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR"' EXIT
+
+SINCE="${1:-$(date -d '8 days ago' +%Y%m%d)}"
+CSV="${TMPDIR}/usage.csv"
+PROJ_CSV="${TMPDIR}/projects.csv"</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>The <code>trap 'rm -rf "$TMPDIR"' EXIT</code> guarantees the temp dir is cleaned up even if the script crashes — no leaked <code>/tmp</code> garbage.</p>
+                <p><strong>The 8-day window is the heart of the design.</strong> Every run rewrites the last 8 days; rows older than that are immutable. This means ccusage can refine pricing for recent days (it re-reads JSONLs) without rewriting all history.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-daily.sh</span><span class="range">L20–L37 · daily totals via ccusage + jq</span></div>
+<pre><code class="language-bash"># (1) per-(date, model) totals  — feeds daily_usage
+# ccusage v19 split agents under subcommands; top-level `daily` now aggregates
+# all agents and drops modelBreakdowns. `claude daily` preserves the legacy shape.
+npx --yes ccusage@latest claude daily --since "$SINCE" --json \
+  | jq -r '
+      .daily[] as $d
+      | $d.modelBreakdowns[]
+      | [
+          $d.date,
+          .modelName,
+          (.inputTokens // 0),
+          (.outputTokens // 0),
+          (.cacheCreationTokens // 0),
+          (.cacheReadTokens // 0),
+          (.cost // 0)
+        ]
+      | @csv
+    ' &gt; "$CSV"</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>The <code>claude</code> subcommand is mandatory under ccusage v19+. Top-level <code>ccusage daily</code> aggregates Claude + Codex + OpenCode + Amp + pi together and drops <code>modelBreakdowns</code> — the JSON has no per-model split, so the next <code>.modelBreakdowns[]</code> blows up with "Cannot iterate over null". That's the v19 break.</p>
+                <p>The <code>jq</code> pipeline <strong>flattens nested JSON to one CSV row per (day × model)</strong>. The <code>// 0</code> pattern coalesces nulls to zero — old days may have <code>cacheReadTokens: null</code> before ccusage tracked that.</p>
+                <p><code>@csv</code> handles quoting automatically — model names like <code>claude-haiku-4-5-20251001</code> have no commas, but defensive quoting costs nothing.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-daily.sh</span><span class="range">L39–L57 · per-project breakdown</span></div>
+<pre><code class="language-bash"># (2) per-(project, date, model) breakdown — feeds project_daily_usage.
+# Uses --instances to add the project_path dimension.
+npx --yes ccusage@latest claude daily --since "$SINCE" --instances --breakdown --json \
+  | jq -r '
+      .projects
+      | to_entries[] as $p
+      | $p.value[] as $d
+      | $d.modelBreakdowns[] as $m
+      | [
+          $p.key,
+          $d.date,
+          $m.modelName,
+          ($m.inputTokens // 0),
+          ($m.outputTokens // 0),
+          ($m.cacheCreationTokens // 0),
+          ($m.cacheReadTokens // 0),
+          ($m.cost // 0)
+        ]
+      | @csv
+    ' &gt; "$PROJ_CSV"</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>The same ccusage call with <code>--instances</code> changes the JSON shape: there's no top-level <code>.daily[]</code> anymore; instead <code>.projects</code> is a map from <strong>project_path</strong> (e.g. <code>-home-abhishek-chatterjee</code>) to the daily array.</p>
+                <p><code>to_entries[]</code> turns that map into <code>{key, value}</code> pairs — <code>$p.key</code> becomes the project path, <code>$p.value</code> becomes the array of daily rows.</p>
+                <p><strong>Why both calls?</strong> Each total in <code>project_daily_usage</code> grouped by (date, model) is guaranteed to sum to the matching <code>daily_usage</code> row — to the cent. That reconciliation invariant is the whole reason to store both.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-daily.sh</span><span class="range">L59–L64 · early-exit guard</span></div>
+<pre><code class="language-bash">ROWS=$(wc -l &lt; "$CSV")
+PROJ_ROWS=$(wc -l &lt; "$PROJ_CSV")
+if [[ "$ROWS" -eq 0 &amp;&amp; "$PROJ_ROWS" -eq 0 ]]; then
+  echo "[ingest] no rows from ccusage since $SINCE — nothing to do"
+  exit 0
+fi</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>If ccusage returned no rows (e.g. you had no Claude activity for 8 days), <strong>don't open DuckDB at all</strong>. Opening + closing the file on a no-op still costs a write transaction and confuses the modification timestamp.</p>
+                <p>An <code>exit 0</code> here is intentional — "nothing happened" is a success, not a failure. systemd treats this as a clean run.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-daily.sh</span><span class="range">L66–L84 · daily_usage upsert</span></div>
+<pre><code class="language-bash">"$DUCKDB" "$DB" &lt;&lt;SQL
+CREATE OR REPLACE TEMP TABLE staging AS
+SELECT * FROM read_csv('$CSV',
+  header=false,
+  columns={
+    'date': 'DATE',
+    'model': 'VARCHAR',
+    'input_tokens': 'BIGINT',
+    'output_tokens': 'BIGINT',
+    'cache_creation_tokens': 'BIGINT',
+    'cache_read_tokens': 'BIGINT',
+    'cost': 'DOUBLE'
+  }
+);
+
+INSERT OR REPLACE INTO daily_usage
+  (date, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cost, ingested_at)
+SELECT date, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cost, CURRENT_TIMESTAMP
+FROM staging;</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>The bash heredoc (<code>&lt;&lt;SQL … SQL</code>) lets us shell-interpolate <code>$CSV</code> into the SQL string. The <strong>CSV staging table</strong> + <strong>INSERT OR REPLACE</strong> pattern is DuckDB's idiomatic upsert.</p>
+                <p>The <code>columns={…}</code> dict tells DuckDB the schema explicitly — <strong>never auto-infer for production ingest</strong>. Auto-inference silently picks <code>VARCHAR</code> for an all-null column, which breaks downstream sums.</p>
+                <p><code>INSERT OR REPLACE</code> uses the table's PK <code>(date, model)</code> — any row that already exists gets fully replaced. Perfect for re-running over the 8-day window.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-daily.sh</span><span class="range">L86–L110 · project_daily_usage upsert + summary</span></div>
+<pre><code class="language-bash">CREATE OR REPLACE TEMP TABLE staging_proj AS
+SELECT * FROM read_csv('$PROJ_CSV',
+  header=false,
+  columns={
+    'project_path': 'VARCHAR',
+    'date': 'DATE',
+    'model': 'VARCHAR',
+    'input_tokens': 'BIGINT',
+    'output_tokens': 'BIGINT',
+    'cache_creation_tokens': 'BIGINT',
+    'cache_read_tokens': 'BIGINT',
+    'cost': 'DOUBLE'
+  }
+);
+
+INSERT OR REPLACE INTO project_daily_usage
+  (project_path, date, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cost, ingested_at)
+SELECT project_path, date, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cost, CURRENT_TIMESTAMP
+FROM staging_proj;
+
+SELECT
+  '[ingest] upserted ' || (SELECT COUNT(*) FROM staging)
+  || ' daily rows + ' || (SELECT COUNT(*) FROM staging_proj)
+  || ' project-day rows (since $SINCE)' AS msg;
+SQL</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>Same upsert pattern as before, just with the extra <code>project_path</code> dimension. PK is <code>(project_path, date, model)</code> — a project with 3 models over 8 days produces up to 24 rows, all idempotent.</p>
+                <p>The final <code>SELECT</code> returns a one-row summary so systemd's journal shows <em>exactly</em> how much was upserted. This is your audit trail when you're wondering "did the timer actually fire?"</p>
+              </div>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <!-- ingest-sessions.py -->
+      <section id="cs-ingest-sessions">
+        <h2>claude-stats · ingest-sessions.py</h2>
+        <p class="meta">~/Documents/pulse/claude-stats/bin/ingest-sessions.py · 234 lines · python</p>
+        <p class="intro">Walks every <code>.jsonl</code> under <code>~/.claude/projects/</code> and aggregates per-conversation stats: message counts, tool calls, skill invocations, max context size. Per-project <em>cost</em> data lives elsewhere (<code>project_daily_usage</code>, written by <code>ingest-daily.sh</code>) — this script only handles the local-only signal that ccusage can't see.</p>
+
+        <details class="script">
+          <summary><span class="chev">▶</span><span class="fname">ingest-sessions.py</span><span class="desc">5 blocks · JSONL walker</span></summary>
+          <div class="body">
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-sessions.py</span><span class="range">L1–L31 · imports &amp; paths</span></div>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""Ingest Claude Code session data into the local DuckDB.
+
+Source: JSONL files at ~/.claude/projects/*/*.jsonl  (per-conversation detail).
+
+Writes: conversations, conversation_tool_usage, conversation_skill_usage.
+Idempotent via INSERT OR REPLACE.
+"""
+
+import csv, json, os, shutil, subprocess, sys, tempfile
+from collections import Counter
+from pathlib import Path
+
+HOME = Path.home()
+PROJECTS = HOME / ".claude" / "projects"
+DB = HOME / "Documents" / "claude-stats" / "claude.duckdb"
+DUCKDB = HOME / ".local" / "bin" / "duckdb"
+
+os.environ["PATH"] = (
+    f"{HOME}/.nvm/versions/node/v24.14.1/bin:/usr/bin:/bin:" + os.environ.get("PATH", "")
+)</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>Same cron-safe PATH dance as the bash script — systemd's minimal PATH won't find <code>duckdb</code> in <code>~/.local/bin</code>.</p>
+                <p>Standard-lib only — <code>csv</code>, <code>json</code>, <code>Counter</code>, <code>Path</code>. No pip dependencies means <strong>nothing to break across Python upgrades</strong>. Even <code>shutil</code> + <code>tempfile</code> are stdlib.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-sessions.py</span><span class="range">L34–L45 · main vs subagent detection</span></div>
+<pre><code class="language-python">def classify_path(path: Path):
+    """Return (kind, project_path, parent_session_id) from a JSONL file path."""
+    # Main:     .claude/projects/&lt;project&gt;/&lt;uuid&gt;.jsonl
+    # Subagent: .claude/projects/&lt;project&gt;/&lt;parent_uuid&gt;/subagents/&lt;agent-id&gt;.jsonl
+    parts = path.relative_to(PROJECTS).parts
+    project_path = parts[0]
+    if len(parts) == 2:
+        return "main", project_path, None
+    if len(parts) &gt;= 3 and "subagents" in parts:
+        parent_uuid = parts[1]
+        return "subagent", project_path, parent_uuid
+    return "main", project_path, None</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>Claude Code stores subagent transcripts in a nested folder. We classify by <strong>path shape</strong>, not file contents — much cheaper than parsing every JSONL twice.</p>
+                <p>The parent UUID becomes <code>conversations.parent_session_id</code>, so the dashboard can show "this subagent was spawned by that main conversation."</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-sessions.py</span><span class="range">L48–L109 · the JSONL walker (the heart)</span></div>
+<pre><code class="language-python">def parse_jsonl(path: Path):
+    session_id = path.stem
+    kind, project_path, parent_sid = classify_path(path)
+    started_at = ended_at = cwd = git_branch = summary = None
+    n_user = n_assistant = n_tool_calls = 0
+    max_ctx = 0
+    max_ctx_model = ""
+    tools: Counter = Counter()
+    skills: Counter = Counter()
+
+    with path.open(errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # tolerate truncated/in-progress files
+
+            ts = d.get("timestamp")
+            if ts:
+                if started_at is None or ts &lt; started_at: started_at = ts
+                if ended_at  is None or ts &gt; ended_at:  ended_at = ts
+
+            t = d.get("type")
+            if t == "assistant":
+                n_assistant += 1
+                msg = d.get("message", {}) or {}
+                usage = msg.get("usage") or {}
+                if usage:
+                    ctx = ((usage.get("input_tokens") or 0)
+                         + (usage.get("cache_creation_input_tokens") or 0)
+                         + (usage.get("cache_read_input_tokens") or 0))
+                    if ctx &gt; max_ctx:
+                        max_ctx = ctx
+                        max_ctx_model = msg.get("model") or ""
+                for block in (msg.get("content") or []):
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        name = block.get("name") or "unknown"
+                        tools[name] += 1
+                        n_tool_calls += 1
+                        if name == "Skill":
+                            sk = (block.get("input") or {}).get("skill")
+                            if sk: skills[sk] += 1</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>One pass through each JSONL — every line is a JSON object (a conversation event). We track <strong>extremes</strong> (min/max timestamp = session span, max context = how big the conversation grew) and <strong>counters</strong> (tool calls, skill invocations).</p>
+                <p>The <code>errors="replace"</code> + <code>JSONDecodeError → continue</code> combo tolerates files Claude Code is still writing to. Lossy &gt; crashing on a half-written line.</p>
+                <p>The "max context" calculation sums three token fields because Claude Code's usage shape splits fresh tokens from cached ones. Tracking this lets the dashboard show <strong>context-pressure curves per conversation</strong>.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-sessions.py</span><span class="range">L144–L184 · DuckDB load via heredoc SQL</span></div>
+<pre><code class="language-python">sql = f"""
+CREATE OR REPLACE TEMP TABLE staging_conv AS
+SELECT * FROM read_csv('{tmpdir}/conversations.csv',
+  header=false,
+  columns={{
+    'session_id': 'VARCHAR', 'project_path': 'VARCHAR', 'cwd': 'VARCHAR',
+    'git_branch': 'VARCHAR', 'kind': 'VARCHAR', 'parent_session_id': 'VARCHAR',
+    'started_at': 'TIMESTAMP', 'ended_at': 'TIMESTAMP',
+    'n_user_msgs': 'INTEGER', 'n_assistant_msgs': 'INTEGER',
+    'n_tool_calls': 'INTEGER', 'max_context_tokens': 'BIGINT',
+    'model': 'VARCHAR', 'summary': 'VARCHAR'
+  }});
+
+INSERT OR REPLACE INTO conversations
+  (session_id, project_path, cwd, git_branch, kind, parent_session_id,
+   started_at, ended_at, n_user_msgs, n_assistant_msgs, n_tool_calls,
+   max_context_tokens, model, summary, ingested_at)
+SELECT session_id, project_path, cwd, git_branch, kind, parent_session_id,
+       started_at, ended_at, n_user_msgs, n_assistant_msgs, n_tool_calls,
+       max_context_tokens, model, summary, CURRENT_TIMESTAMP
+FROM staging_conv;
+"""
+proc = subprocess.run([str(DUCKDB), str(DB)], input=sql, text=True, capture_output=True)</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>Notice the pattern: <strong>write CSVs to a temp dir, then run one SQL script that loads all three at once</strong>. This is dramatically faster than per-row inserts — DuckDB streams CSV into staging in microseconds.</p>
+                <p>The <code>{{</code> and <code>}}</code> in the f-string are literal braces (Python escapes them this way) because DuckDB's column dict is also brace-delimited.</p>
+                <p>The whole script is one transaction — if any step fails, DuckDB rolls back and the user sees stderr. No partial states.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-sessions.py</span><span class="range">L196–L230 · main loop &amp; cleanup</span></div>
+<pre><code class="language-python">def main():
+    if not PROJECTS.exists():
+        print("[ingest-sessions] no ~/.claude/projects yet — nothing to ingest")
+        return
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="claude-stats-"))
+    try:
+        conv_rows, tool_rows, skill_rows = [], [], []
+        for jsonl in sorted(PROJECTS.rglob("*.jsonl")):
+            result = parse_jsonl(jsonl)
+            if not result:
+                continue
+            conv, tools, skills = result
+            conv_rows.append(conv)
+            for tool_name, count in tools:
+                tool_rows.append({"session_id": conv["session_id"], "tool_name": tool_name, "call_count": count})
+            for skill_name, count in skills:
+                skill_rows.append({"session_id": conv["session_id"], "skill_name": skill_name, "call_count": count})
+
+        write_csv(conv_rows, [...], tmpdir / "conversations.csv")
+        write_csv(tool_rows, [...], tmpdir / "tools.csv")
+        write_csv(skill_rows, [...], tmpdir / "skills.csv")
+        duckdb_load(str(tmpdir))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p><code>PROJECTS.rglob("*.jsonl")</code> recursively finds every transcript — main conversations and nested subagents — in one call.</p>
+                <p>The <code>try / finally</code> guarantees the temp dir is cleaned up even on crashes. Same intent as the bash <code>trap</code>, different mechanism.</p>
+                <p>This script runs <strong>before</strong> <code>claude-clean</code> deletes per-project transcripts — that's wired up as a hook in <code>~/.config/fish/functions/claude-clean.fish</code>. So even if you wipe your <code>~/.claude/projects/</code>, the DuckDB still has every conversation.</p>
+              </div>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <!-- schema.sql -->
+      <section id="cs-schema">
+        <h2>claude-stats · schema.sql</h2>
+        <p class="meta">~/Documents/pulse/claude-stats/schema.sql · 79 lines · sql</p>
+        <p class="intro">Five tables, all <code>CREATE TABLE IF NOT EXISTS</code> so <code>install.sh</code> can re-run safely. The schema versions itself in comments (v2 added subagent classification, v3 added skills, v4 split project cost out of <code>conversations</code>).</p>
+
+        <details class="script">
+          <summary><span class="chev">▶</span><span class="fname">schema.sql</span><span class="desc">3 blocks · the 5 tables</span></summary>
+          <div class="body">
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>schema.sql</span><span class="range">L1–L14 · daily_usage</span></div>
+<pre><code class="language-sql">CREATE TABLE IF NOT EXISTS daily_usage (
+    date DATE NOT NULL,
+    model VARCHAR NOT NULL,
+    input_tokens BIGINT NOT NULL DEFAULT 0,
+    output_tokens BIGINT NOT NULL DEFAULT 0,
+    cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
+    cache_read_tokens BIGINT NOT NULL DEFAULT 0,
+    cost DOUBLE NOT NULL DEFAULT 0.0,
+    ingested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (date, model)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_usage_date ON daily_usage(date);
+CREATE INDEX IF NOT EXISTS idx_daily_usage_model ON daily_usage(model);</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>Composite PK <code>(date, model)</code> matches how the dashboard groups: by day, split by model. <code>ingested_at</code> is a free audit column — you can see when a row was last touched without changing the data.</p>
+                <p><code>DEFAULT 0</code> on every numeric column means a future ccusage release adding a new token field won't break inserts that omit it.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>schema.sql</span><span class="range">L17–L58 · conversations + tool/skill detail</span></div>
+<pre><code class="language-sql">-- v2: one row per .jsonl file (main conversation OR subagent transcript)
+CREATE TABLE IF NOT EXISTS conversations (
+    session_id VARCHAR PRIMARY KEY,
+    project_path VARCHAR,
+    cwd VARCHAR,
+    git_branch VARCHAR,
+    kind VARCHAR NOT NULL DEFAULT 'main',     -- 'main' or 'subagent'
+    parent_session_id VARCHAR,                -- NULL for main, parent UUID for subagent
+    started_at TIMESTAMP,
+    ended_at TIMESTAMP,
+    n_user_msgs INTEGER NOT NULL DEFAULT 0,
+    n_assistant_msgs INTEGER NOT NULL DEFAULT 0,
+    n_tool_calls INTEGER NOT NULL DEFAULT 0,
+    max_context_tokens BIGINT NOT NULL DEFAULT 0,
+    model VARCHAR,
+    summary VARCHAR,
+    ingested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- v2: per-tool call counts per conversation
+CREATE TABLE IF NOT EXISTS conversation_tool_usage (
+    session_id VARCHAR,
+    tool_name VARCHAR,
+    call_count INTEGER NOT NULL,
+    PRIMARY KEY (session_id, tool_name)
+);
+
+-- v3: per-skill call counts (extracted from Skill tool_use blocks)
+CREATE TABLE IF NOT EXISTS conversation_skill_usage (
+    session_id VARCHAR,
+    skill_name VARCHAR,
+    call_count INTEGER NOT NULL,
+    PRIMARY KEY (session_id, skill_name)
+);</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p><strong>Star schema</strong>: <code>conversations</code> is the fact table (one row per JSONL), the two usage tables are dimensions keyed by <code>session_id</code>. This lets the dashboard answer "top tools across all conversations" with one JOIN.</p>
+                <p><code>kind</code> + <code>parent_session_id</code> turn the table into a forest: subagents point at their parent. The dashboard's session detail view uses this to render an indented tree.</p>
+                <p>Skills are tracked separately because skill names overlap with tool names (e.g. you have a <code>commit</code> skill, and there's also a <code>Bash</code> tool). Splitting them keeps the analytics clean.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>schema.sql</span><span class="range">L60–L78 · project_daily_usage (v4)</span></div>
+<pre><code class="language-sql">-- v4: per-(project, date, model) cost breakdown from
+--     `ccusage claude daily --instances --breakdown --json`.
+-- Same write semantics as daily_usage: INSERT OR REPLACE on a rolling 8-day window
+-- driven by ingest-daily.sh. Rows older than 8 days are immutable. Adds project_path
+-- so per-project cost can be windowed AND reconciled against daily_usage to the
+-- cent (sum over project_path = daily row).
+CREATE TABLE IF NOT EXISTS project_daily_usage (
+    project_path VARCHAR NOT NULL,
+    date         DATE    NOT NULL,
+    model        VARCHAR NOT NULL,
+    input_tokens          BIGINT NOT NULL DEFAULT 0,
+    output_tokens         BIGINT NOT NULL DEFAULT 0,
+    cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
+    cache_read_tokens     BIGINT NOT NULL DEFAULT 0,
+    cost         DOUBLE  NOT NULL DEFAULT 0.0,
+    ingested_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (project_path, date, model)
+);</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>v4 is the reason both ccusage calls in <code>ingest-daily.sh</code> exist. Before v4, per-project cost was computed by <code>ingest-sessions.py</code> walking JSONLs — but JSONL costs drift from ccusage's authoritative prices, so the totals never matched.</p>
+                <p>Now: ccusage is the single source of truth for cost, the rollup table reconciles to <code>daily_usage</code> to the cent, and <code>ingest-sessions.py</code> stays focused on local-only signal (tool/skill counts).</p>
+              </div>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <!-- cleanup-old -->
+      <section id="cs-cleanup">
+        <h2>claude-stats · cleanup-old.sh</h2>
+        <p class="meta">~/Documents/pulse/claude-stats/bin/cleanup-old.sh · 31 lines · bash</p>
+        <p class="intro">365-day retention. Runs after each ingest. Short enough to show in full.</p>
+
+        <details class="script">
+          <summary><span class="chev">▶</span><span class="fname">cleanup-old.sh</span><span class="desc">1 block · full file</span></summary>
+          <div class="body">
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>cleanup-old.sh</span><span class="range">full · L1–L31</span></div>
+<pre><code class="language-bash">#!/usr/bin/env bash
+# Delete rows older than 365 days across all tables. Runs after each ingest.
+set -euo pipefail
+
+DB="${HOME}/Documents/claude-stats/claude.duckdb"
+DUCKDB="${HOME}/.local/bin/duckdb"
+
+"$DUCKDB" "$DB" &lt;&lt;'SQL'
+DELETE FROM daily_usage         WHERE date &lt; (CURRENT_DATE - INTERVAL 365 DAY);
+DELETE FROM project_daily_usage WHERE date &lt; (CURRENT_DATE - INTERVAL 365 DAY);
+
+DELETE FROM conversations
+WHERE ended_at IS NOT NULL
+  AND CAST(ended_at AS DATE) &lt; (CURRENT_DATE - INTERVAL 365 DAY);
+
+-- Orphan tool/skill rows for conversations we just deleted
+DELETE FROM conversation_tool_usage
+WHERE session_id NOT IN (SELECT session_id FROM conversations);
+
+DELETE FROM conversation_skill_usage
+WHERE session_id NOT IN (SELECT session_id FROM conversations);
+
+SELECT '[cleanup] daily_usage=' || (SELECT COUNT(*) FROM daily_usage)
+  || ' project_daily=' || (SELECT COUNT(*) FROM project_daily_usage)
+  || ' conversations=' || (SELECT COUNT(*) FROM conversations)
+  || ' tool_rows=' || (SELECT COUNT(*) FROM conversation_tool_usage)
+  || ' skill_rows=' || (SELECT COUNT(*) FROM conversation_skill_usage) AS msg;
+SQL</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>Note the heredoc is <code>&lt;&lt;'SQL'</code> with quoted delimiter — that disables shell interpolation inside the SQL block. No variables to expand here, so quoted is safer.</p>
+                <p><strong>Why delete orphan rows manually?</strong> DuckDB doesn't enforce foreign keys, so deleting a conversation doesn't cascade to its tool/skill rows. The two <code>DELETE … NOT IN</code> queries do the cascade explicitly.</p>
+                <p>The final summary <code>SELECT</code> appears in systemd's journal — you can grep <code>[cleanup]</code> across boots to see retention working over time.</p>
+              </div>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <!-- build-dashboard pattern -->
+      <section id="cs-dashboard">
+        <h2>claude-stats · build-dashboard.sh</h2>
+        <p class="meta">~/Documents/pulse/claude-stats/bin/build-dashboard.sh · 959 lines · bash + embedded HTML/JS</p>
+        <p class="intro">Too big to walk line-by-line, but the pattern repeats throughout: <strong>query DuckDB → embed JSON in HTML → render with Plotly</strong>. We'll look at the spine.</p>
+
+        <details class="script">
+          <summary><span class="chev">▶</span><span class="fname">build-dashboard.sh</span><span class="desc">3 blocks · the dashboard pattern</span></summary>
+          <div class="body">
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>build-dashboard.sh</span><span class="range">pattern · query helper</span></div>
+<pre><code class="language-bash"># q() — run a DuckDB SQL query, capture JSON output into a shell var.
+# Used everywhere: each chart gets its own q "..." block.
+q() {
+  "$DUCKDB" -json "$DB" "$1"
+}
+
+# Example: cost over time
+COST_TS=$(q "
+  SELECT
+    (date::TIMESTAMP AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata' AS day,
+    SUM(cost) AS cost
+  FROM daily_usage
+  WHERE date &gt;= CURRENT_DATE - INTERVAL ${DAYS} DAY
+  GROUP BY day
+  ORDER BY day
+")</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>The tiny <code>q()</code> wrapper lets every chart be a single shell variable. DuckDB's <code>-json</code> flag emits a JSON array per query — perfect to drop straight into a JS <code>const</code>.</p>
+                <p><strong>The timezone double-wrap</strong> is the bug-bait pattern: <code>AT TIME ZONE 'UTC'</code> first attaches the naive timestamp to UTC, <em>then</em> <code>AT TIME ZONE 'Asia/Kolkata'</code> shifts it. A single <code>AT TIME ZONE</code> silently no-ops because DuckDB doesn't know what zone the naive value was in.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>build-dashboard.sh</span><span class="range">pattern · embedding data in HTML</span></div>
+<pre><code class="language-bash">cat &gt; "$OUT" &lt;&lt;HTML
+&lt;!doctype html&gt;
+&lt;html&gt;&lt;head&gt;
+  &lt;script src="https://cdn.plot.ly/plotly-2.35.0.min.js"&gt;&lt;/script&gt;
+  &lt;style&gt;${CSS}&lt;/style&gt;
+&lt;/head&gt;&lt;body&gt;
+  &lt;div id="chart-cost"&gt;&lt;/div&gt;
+  &lt;div id="chart-tokens"&gt;&lt;/div&gt;
+  &lt;script&gt;
+    const DATA = {
+      cost_ts: ${COST_TS:-[]},
+      tokens_ts: ${TOKENS_TS:-[]},
+      top_projects: ${TOP_PROJECTS:-[]},
+      // ... a dozen more
+    };
+    renderCost();
+    renderTokens();
+  &lt;/script&gt;
+&lt;/body&gt;&lt;/html&gt;
+HTML</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p><strong>This is the whole "no build step" trick.</strong> The bash heredoc interpolates JSON arrays directly into a JS object literal. No bundler, no npm, no static files — one self-contained HTML.</p>
+                <p>The <code>${COST_TS:-[]}</code> default-empty-array pattern protects against an empty DuckDB (fresh install, no data yet). Without it, the JS parse would die on <code>cost_ts: ,</code>.</p>
+                <p>Plotly via CDN means the user needs network on first open, but the page caches and works offline thereafter. Acceptable trade-off for keeping the dashboard build a 1-second shell script.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>build-dashboard.sh</span><span class="range">pattern · per-chart JS renderer</span></div>
+<pre><code class="language-bash">    function renderCost() {
+      const trace = {
+        x: DATA.cost_ts.map(r =&gt; r.day),
+        y: DATA.cost_ts.map(r =&gt; r.cost),
+        type: 'bar',
+        marker: { color: '#a78bfa' }
+      };
+      Plotly.newPlot('chart-cost', [trace], {
+        paper_bgcolor: '#000',
+        plot_bgcolor:  '#000',
+        font: { color: '#f5f5f5' },
+        margin: { t: 8, r: 8, b: 30, l: 50 }
+      }, { displayModeBar: false });
+    }</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>Every chart has the same shape: <code>map</code> the rows into Plotly's <code>{x, y, …}</code> trace format, call <code>Plotly.newPlot</code> with the AMOLED palette. Once you've done one, the rest copy/paste.</p>
+                <p><code>displayModeBar: false</code> hides Plotly's toolbar — keeps the dashboard chrome-free.</p>
+                <p>Adding a new chart = a <code>q()</code> block + a JSON key + a <code>renderXxx()</code> function + a <code>&lt;div id=…&gt;</code>. Four small edits. No re-install (the script lives in <code>~/Documents/claude-stats/bin/</code> as a symlink to the repo).</p>
+              </div>
+            </div>
+
+            <div class="skipped">Skipped here: the actual ~30 chart blocks, plus the embedded CSS (~200 lines of AMOLED variables and grid layout). All follow the q()→DATA→render() pattern shown above.</div>
+          </div>
+        </details>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- battery-stats                                                 -->
+      <!-- ============================================================ -->
+
+      <h3 class="subhead">Switching projects <span class="what">→ battery-stats</span></h3>
+
+      <section id="bs-poll">
+        <h2>battery-stats · poll.sh</h2>
+        <p class="meta">~/Documents/pulse/battery-stats/bin/poll.sh · 81 lines · bash</p>
+        <p class="intro">The heartbeat. Every 5 minutes, systemd fires this: read battery sysfs + screen state, append one row to <code>battery_samples</code>, refresh derived tables. Designed to be <em>cheap</em> — &lt;100ms wall clock — so it can run on battery without itself becoming the drain.</p>
+
+        <details class="script">
+          <summary><span class="chev">▶</span><span class="fname">poll.sh</span><span class="desc">5 blocks · the 5-min sampler</span></summary>
+          <div class="body">
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>poll.sh</span><span class="range">L1–L22 · raw sysfs reads</span></div>
+<pre><code class="language-bash">#!/bin/bash
+# poll.sh — single battery + screen-state sample, append to DuckDB
+set -euo pipefail
+
+DB="$HOME/Documents/battery-stats/battery.duckdb"
+DUCKDB="$HOME/.local/bin/duckdb"
+BAT="/sys/class/power_supply/BAT0"
+AC="/sys/class/power_supply/AC"
+
+[ -d "$BAT" ] || { echo "no BAT0" &gt;&amp;2; exit 0; }
+
+# raw sysfs reads (microunits)
+energy_now_uwh=$(cat "$BAT/energy_now")
+energy_full_uwh=$(cat "$BAT/energy_full")
+energy_full_design_uwh=$(cat "$BAT/energy_full_design")
+power_now_uw=$(cat "$BAT/power_now" 2&gt;/dev/null || echo 0)
+voltage_uv=$(cat "$BAT/voltage_now")
+capacity=$(cat "$BAT/capacity")
+cycles=$(cat "$BAT/cycle_count" 2&gt;/dev/null || echo 0)
+state=$(cat "$BAT/status" | tr '[:upper:]' '[:lower:]')
+on_ac=$(cat "$AC/online" 2&gt;/dev/null || echo 0)</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>The kernel exposes battery state at <code>/sys/class/power_supply/BAT0/</code> — just files you <code>cat</code>. No D-Bus, no daemon, no permissions issues. Cheaper than calling <code>upower</code>.</p>
+                <p>Values are in <strong>microunits</strong> (µWh, µW, µV) — integer-precise, no float math at this stage. We convert to base units later, once, before writing.</p>
+                <p>The <code>|| echo 0</code> fallbacks tolerate kernels where <code>power_now</code> or <code>cycle_count</code> aren't exposed (some embedded controllers don't report them).</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>poll.sh</span><span class="range">L24–L40 · screen-state via logind + GNOME ScreenSaver</span></div>
+<pre><code class="language-bash"># screen state — Wayland-native
+idle_hint="false"
+screensaver="false"
+if [ -n "${XDG_SESSION_ID:-}" ]; then
+    h=$(loginctl show-session "$XDG_SESSION_ID" -p IdleHint --value 2&gt;/dev/null || echo "no")
+    [ "$h" = "yes" ] &amp;&amp; idle_hint="true"
+fi
+if command -v gdbus &gt;/dev/null 2&gt;&amp;1; then
+    s=$(timeout 2 gdbus call --session \
+            --dest org.gnome.ScreenSaver \
+            --object-path /org/gnome/ScreenSaver \
+            --method org.gnome.ScreenSaver.GetActive 2&gt;/dev/null || echo "(false,)")
+    [[ "$s" == *"true"* ]] &amp;&amp; screensaver="true"
+fi
+screen_active="true"
+[ "$idle_hint" = "true" ] &amp;&amp; screen_active="false"
+[ "$screensaver" = "true" ] &amp;&amp; screen_active="false"</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p><strong>Two independent signals for "is the screen actually on?"</strong> <code>loginctl</code> reports systemd-logind's idle hint (set by the compositor when there's no user input); <code>gdbus</code> asks GNOME ScreenSaver if the screen is locked.</p>
+                <p>"Screen active" requires <em>both</em> to say no — this is the strict definition because the analytical question is "how much battery did the screen actually consume", not "was the user theoretically there".</p>
+                <p>The <code>timeout 2</code> guards against gdbus hanging if the GNOME bus is sluggish — poll.sh has a 5-min budget, not a 2-hour one.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>poll.sh</span><span class="range">L42–L51 · brightness</span></div>
+<pre><code class="language-bash">brightness_pct="NULL"
+for bl in /sys/class/backlight/*/; do
+    if [ -d "$bl" ]; then
+        cur=$(cat "$bl/brightness" 2&gt;/dev/null || echo 0)
+        max=$(cat "$bl/max_brightness" 2&gt;/dev/null || echo 1)
+        [ "$max" -gt 0 ] &amp;&amp; brightness_pct=$(( cur * 100 / max ))
+        break
+    fi
+done</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>Brightness lives at a vendor-specific path — could be <code>intel_backlight</code>, <code>amdgpu_bl0</code>, <code>nvidia_0</code>, etc. The glob + first-match handles all of them.</p>
+                <p>Stored as a literal SQL <code>NULL</code> (not a string) when unreadable — the schema accepts <code>brightness_pct INTEGER</code> NULL because some sessions (TTY, headless) have no backlight at all.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>poll.sh</span><span class="range">L53–L74 · convert &amp; INSERT</span></div>
+<pre><code class="language-bash"># convert to base units
+e_now=$(awk -v v="$energy_now_uwh" 'BEGIN{printf "%.6f", v/1000000}')
+e_full=$(awk -v v="$energy_full_uwh" 'BEGIN{printf "%.6f", v/1000000}')
+e_full_des=$(awk -v v="$energy_full_design_uwh" 'BEGIN{printf "%.6f", v/1000000}')
+p_now=$(awk -v v="$power_now_uw" 'BEGIN{printf "%.6f", v/1000000}')
+v_now=$(awk -v v="$voltage_uv" 'BEGIN{printf "%.6f", v/1000000}')
+
+on_ac_bool="false"
+[ "$on_ac" = "1" ] &amp;&amp; on_ac_bool="true"
+
+ts=$(date -u +"%Y-%m-%d %H:%M:%S")
+
+"$DUCKDB" "$DB" &lt;&lt;SQL
+INSERT INTO battery_samples
+  (ts, energy_now_wh, energy_full_wh, energy_full_design_wh, power_now_w,
+   voltage_v, capacity_pct, cycle_count, state, on_ac,
+   screen_active, idle_hint, screensaver_active, brightness_pct)
+VALUES
+  ('$ts', $e_now, $e_full, $e_full_des, $p_now,
+   $v_now, $capacity, $cycles, '$state', $on_ac_bool,
+   $screen_active, $idle_hint, $screensaver, $brightness_pct)
+ON CONFLICT (ts) DO NOTHING;
+SQL</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p><code>awk</code> handles the float division because bash can't do floats natively. Six decimals of µ→base precision is enough for joules-per-hour math down to fractions of a milliwatt.</p>
+                <p><strong>UTC timestamp via <code>date -u</code> — never local time.</strong> This is the rule that the timezone gotcha enforces: store naive UTC, convert at display time. Storing in IST would silently break any DST-aware downstream tool.</p>
+                <p><code>ON CONFLICT (ts) DO NOTHING</code> makes the insert idempotent: if the timer fires twice within the same second (manual + scheduled), the second insert is a no-op.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>poll.sh</span><span class="range">L76–L80 · flock-guarded aggregate refresh</span></div>
+<pre><code class="language-bash"># Refresh derived tables so dashboard reflects every poll.
+# Use flock so concurrent runs (e.g. manual + timer) don't collide on the DB.
+LOCK="/tmp/battery-stats-aggregate.lock"
+flock -n "$LOCK" -c "$HOME/Documents/battery-stats/bin/aggregate-daily.sh &gt;/dev/null 2&gt;&amp;1" || true</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>After every poll we re-derive <code>discharge_sessions</code> and <code>daily_battery</code> so the dashboard is always fresh — no waiting for the nightly aggregate.</p>
+                <p><code>flock -n</code> is non-blocking: if another aggregate is already running, this one just exits. <code>|| true</code> swallows the lock-failure exit code so the poll itself still succeeds.</p>
+                <p>This is the only place battery-stats can race with itself — manual <code>battery-stats refresh</code> + scheduled poll firing at the same second. The lock is cheap insurance.</p>
+              </div>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <!-- aggregate-daily -->
+      <section id="bs-aggregate">
+        <h2>battery-stats · aggregate-daily.sh</h2>
+        <p class="meta">~/Documents/pulse/battery-stats/bin/aggregate-daily.sh · 117 lines · bash + window-function SQL</p>
+        <p class="intro">The brain. Turns 5-minute raw samples into <em>discharge sessions</em> (from unplug to plug-in) and <em>daily roll-ups</em>. All the analytical insight lives in this script's SQL.</p>
+
+        <details class="script">
+          <summary><span class="chev">▶</span><span class="fname">aggregate-daily.sh</span><span class="desc">4 blocks · the window-function pipeline</span></summary>
+          <div class="body">
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>aggregate-daily.sh</span><span class="range">L15–L28 · wipe &amp; the ordered CTE</span></div>
+<pre><code class="language-sql">-- wipe and rebuild derived tables (cheap; battery_samples is small)
+DELETE FROM discharge_sessions;
+DELETE FROM daily_battery;
+
+-- step 1: tag each sample with session boundaries via on_ac transitions
+WITH ordered AS (
+    SELECT
+        ts, energy_now_wh, energy_full_wh, energy_full_design_wh,
+        capacity_pct, cycle_count, state, on_ac, screen_active,
+        LAG(on_ac) OVER (ORDER BY ts) AS prev_on_ac,
+        LAG(ts)    OVER (ORDER BY ts) AS prev_ts
+    FROM battery_samples
+),</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p><strong>Wipe-and-rebuild is fine here.</strong> <code>battery_samples</code> caps at ~25k rows even after a year (5-min poll × 24h × 365 = 105k, but with sleep/suspend it's far less). DuckDB rebuilds derived tables in &lt;100ms.</p>
+                <p><code>LAG(on_ac) OVER (ORDER BY ts)</code> is the magic — for each sample, it gives you the <em>previous</em> sample's <code>on_ac</code> value. That's how we'll detect "the moment AC was unplugged".</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>aggregate-daily.sh</span><span class="range">L29–L43 · session boundaries</span></div>
+<pre><code class="language-sql">boundaries AS (
+    SELECT
+        *,
+        -- new session whenever AC goes from true→false, or first row that is on battery
+        CASE
+            WHEN on_ac = false AND (prev_on_ac IS NULL OR prev_on_ac = true) THEN 1
+            ELSE 0
+        END AS new_session,
+        -- gap to next sample, used for SOT integration; cap at 600s to handle suspends
+        LEAST(
+            COALESCE(EXTRACT(EPOCH FROM (LEAD(ts) OVER (ORDER BY ts) - ts)), 300),
+            600
+        ) AS interval_seconds
+    FROM ordered
+),</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p><strong>The <code>new_session</code> trick.</strong> Stamp a 1 on every "AC just got unplugged" row, 0 elsewhere. Then a running <code>SUM</code> over <code>new_session</code> gives every sample a session ID — DuckDB-idiomatic <em>sessionization</em>.</p>
+                <p><code>LEAD(ts) - ts</code> gives the gap to the next sample. We cap at 600s (10 min) because a laptop suspend produces a multi-hour gap that would inflate SOT integration. Capping says "we don't trust gaps longer than 10 minutes — those are suspends, not active time."</p>
+                <p>The <code>COALESCE(…, 300)</code> handles the very last row, where <code>LEAD(ts)</code> is NULL — default to a typical 5-min interval.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>aggregate-daily.sh</span><span class="range">L44–L78 · session rollup with phantom-filter</span></div>
+<pre><code class="language-sql">tagged AS (
+    SELECT *,
+        SUM(new_session) OVER (ORDER BY ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS session_id
+    FROM boundaries
+    WHERE on_ac = false  -- only battery samples belong to sessions
+)
+INSERT INTO discharge_sessions
+SELECT
+    session_id,
+    MIN(ts) AS start_ts, MAX(ts) AS end_ts,
+    CAST(SUM(interval_seconds) AS BIGINT) AS duration_seconds,
+    MAX(capacity_pct) AS start_pct, MIN(capacity_pct) AS end_pct,
+    GREATEST(MAX(energy_now_wh) - MIN(energy_now_wh), 0) AS energy_used_wh,
+    CAST(SUM(CASE WHEN screen_active THEN interval_seconds ELSE 0 END) AS BIGINT) AS sot_seconds,
+    CAST(SUM(CASE WHEN NOT screen_active THEN interval_seconds ELSE 0 END) AS BIGINT) AS screen_off_seconds,
+    -- avg drain across whole session (incl screen off)
+    CASE WHEN SUM(interval_seconds) &gt; 0
+         THEN GREATEST(MAX(energy_now_wh) - MIN(energy_now_wh), 0) * 3600.0 / SUM(interval_seconds)
+         ELSE NULL END AS avg_drain_w,
+    -- avg drain ONLY when screen was on (the honest number)
+    CASE WHEN SUM(CASE WHEN screen_active THEN interval_seconds ELSE 0 END) &gt; 0
+         THEN GREATEST(MAX(energy_now_wh) - MIN(energy_now_wh), 0) * 3600.0
+              / SUM(CASE WHEN screen_active THEN interval_seconds ELSE 0 END)
+         ELSE NULL END AS avg_drain_w_sot,
+    -- extrapolated full-charge runtime at current SOT drain rate
+    CASE WHEN SUM(CASE WHEN screen_active THEN interval_seconds ELSE 0 END) &gt; 0
+              AND GREATEST(MAX(energy_now_wh) - MIN(energy_now_wh), 0) &gt; 0
+         THEN MAX(energy_full_design_wh) /
+              (GREATEST(MAX(energy_now_wh) - MIN(energy_now_wh), 0) * 3600.0
+               / SUM(CASE WHEN screen_active THEN interval_seconds ELSE 0 END))
+         ELSE NULL END AS projected_full_runtime_hours
+FROM tagged
+GROUP BY session_id
+HAVING duration_seconds &gt; 60
+   AND (MAX(energy_now_wh) - MIN(energy_now_wh)) &gt; 0.05;  -- skip phantoms</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p><strong>The phantom-session filter</strong> (the <code>HAVING</code> clause) is the result of a real bug. A 1-sample session — when you unplug, immediately re-plug — looks like a 0Wh, 0-second discharge. Those sessions polluted the dashboard with infinite-runtime projections.</p>
+                <p>Filter: <code>duration &gt; 60s AND energy_delta &gt; 0.05 Wh</code>. Anything smaller is noise.</p>
+                <p><strong>SOT vs total drain</strong> is the most useful number in the dashboard. Total drain conflates screen-on with screen-off (suspend, idle). SOT drain answers "if I actually use this laptop, how long does the battery last?" — the honest number.</p>
+                <p><code>projected_full_runtime_hours = design_capacity / sot_drain_rate</code> — extrapolates a single discharge session into "if it stayed at this rate from 100% to 0%, how many hours would I get?".</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>aggregate-daily.sh</span><span class="range">L80–L112 · daily roll-up + health</span></div>
+<pre><code class="language-sql">-- step 2: daily roll-up (group by IST date so a 23:00 IST session belongs to today)
+INSERT INTO daily_battery
+SELECT
+    DATE_TRUNC('day', (start_ts AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata')::DATE AS date,
+    CAST(SUM(sot_seconds) / 60 AS INTEGER) AS sot_minutes,
+    CAST(SUM(duration_seconds) / 60 AS INTEGER) AS discharge_minutes,
+    SUM(energy_used_wh) AS total_discharge_wh,
+    CASE WHEN SUM(sot_seconds) &gt; 0
+         THEN SUM(energy_used_wh) * 3600.0 / SUM(sot_seconds)
+         ELSE NULL END AS avg_drain_w_sot,
+    COUNT(*) AS n_sessions,
+    NULL AS cycle_count_eod, NULL AS energy_full_wh_eod, NULL AS health_pct
+FROM discharge_sessions
+GROUP BY date;
+
+-- backfill end-of-day cycle / energy_full from raw samples
+UPDATE daily_battery d SET
+    cycle_count_eod    = s.cycle_count,
+    energy_full_wh_eod = s.energy_full_wh,
+    health_pct         = s.energy_full_wh / NULLIF(s.energy_full_design_wh, 0) * 100
+FROM (
+    SELECT
+        DATE_TRUNC('day', (ts AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata')::DATE AS date,
+        FIRST(cycle_count    ORDER BY ts DESC) AS cycle_count,
+        FIRST(energy_full_wh ORDER BY ts DESC) AS energy_full_wh,
+        FIRST(energy_full_design_wh ORDER BY ts DESC) AS energy_full_design_wh
+    FROM battery_samples
+    GROUP BY date
+) s
+WHERE d.date = s.date;</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p><strong>The double <code>AT TIME ZONE</code> is the tz fix.</strong> Without the first <code>AT TIME ZONE 'UTC'</code>, the literal stays naive and the conversion silently does nothing — your 23:30 IST session would attribute to tomorrow's UTC date.</p>
+                <p>The <code>UPDATE … FROM (subquery)</code> backfills end-of-day battery health: <code>energy_full_wh / energy_full_design_wh × 100</code>. Watching this curve drop over months tells you when the battery actually needs replacing.</p>
+                <p><code>FIRST(x ORDER BY ts DESC)</code> is DuckDB-flavored "give me the last (chronologically) value of x per group" — equivalent to a window function but more compact.</p>
+              </div>
+            </div>
+
+          </div>
+        </details>
+      </section>
+
+      <!-- ingest-upower -->
+      <section id="bs-upower">
+        <h2>battery-stats · ingest-upower.sh</h2>
+        <p class="meta">~/Documents/pulse/battery-stats/bin/ingest-upower.sh · 78 lines · bash</p>
+        <p class="intro">A one-shot historical importer. UPower has been logging your battery to <code>/var/lib/upower/history-*.dat</code> since you installed the OS — months or years of free data. This script bulk-imports it.</p>
+
+        <details class="script">
+          <summary><span class="chev">▶</span><span class="fname">ingest-upower.sh</span><span class="desc">3 blocks · backfill from system logs</span></summary>
+          <div class="body">
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-upower.sh</span><span class="range">L10–L28 · battery model auto-detect</span></div>
+<pre><code class="language-bash"># UPower names files history-{rate,charge}-{MODEL}-{SERIAL}.dat. We read
+# the kernel-reported model from sysfs and glob for matching files.
+BATTERY_MODEL="${BATTERY_MODEL:-$(cat /sys/class/power_supply/BAT0/model_name 2&gt;/dev/null | tr -d '[:space:]')}"
+
+if [ -z "$BATTERY_MODEL" ]; then
+    echo "could not detect battery model from /sys/class/power_supply/BAT0/model_name" &gt;&amp;2
+    echo "set BATTERY_MODEL=&lt;tag&gt; to override (look in $HIST_DIR for history-rate-*.dat)" &gt;&amp;2
+    exit 1
+fi
+
+RATE_FILE=$(ls "$HIST_DIR"/history-rate-"$BATTERY_MODEL"-*.dat 2&gt;/dev/null | head -1 || true)
+CHARGE_FILE=$(ls "$HIST_DIR"/history-charge-"$BATTERY_MODEL"-*.dat 2&gt;/dev/null | head -1 || true)</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>Reading the model name from <code>sysfs</code> avoids hardcoding "L19M4PD3" or similar in the script — it works across laptops without edits. Override via env var if your battery's UPower filename uses a different tag.</p>
+                <p>The error message tells the user <em>exactly</em> what to do — point them at <code>$HIST_DIR</code> to look up the right tag. Good UX in CLI scripts is just "fail with the next step embedded."</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-upower.sh</span><span class="range">L42–L57 · awk TSV→CSV transform</span></div>
+<pre><code class="language-bash"># convert TSV "epoch  value  state" into a CSV that DuckDB can COPY
+awk -F'\t' '$1 ~ /^[0-9]+$/ {
+    cmd = "date -u -d @" $1 " +\"%Y-%m-%d %H:%M:%S\""
+    cmd | getline ts
+    close(cmd)
+    printf "\"%s\",%s,\"%s\"\n", ts, $2, $3
+}' "$RATE_FILE" &gt; "$WORK/rate.csv"</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>UPower stores history as <strong>epoch-second TSVs</strong>. DuckDB can <code>COPY</code> from CSV but can't natively parse Unix epochs in mixed-format columns. So we shell out to <code>date -u -d @<EPOCH></code> via awk to convert.</p>
+                <p><code>cmd | getline ts</code> runs the subshell and reads its stdout into a variable. <code>close(cmd)</code> is mandatory — otherwise awk reuses the same pipe across rows and you get the wrong timestamps.</p>
+                <p>The <code>$1 ~ /^[0-9]+$/</code> guard skips any header or stray comment lines — only rows that start with an epoch get converted.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>ingest-upower.sh</span><span class="range">L60–L78 · DuckDB COPY + ON CONFLICT</span></div>
+<pre><code class="language-sql">CREATE TEMP TABLE staging_rate (ts TIMESTAMP, watts DOUBLE, state VARCHAR);
+COPY staging_rate FROM '$WORK/rate.csv' (HEADER FALSE);
+INSERT INTO upower_rate
+SELECT ts, watts, state FROM staging_rate
+ON CONFLICT (ts, state) DO NOTHING;
+
+CREATE TEMP TABLE staging_charge (ts TIMESTAMP, percentage DOUBLE, state VARCHAR);
+COPY staging_charge FROM '$WORK/charge.csv' (HEADER FALSE);
+INSERT INTO upower_charge
+SELECT ts, percentage, state FROM staging_charge
+ON CONFLICT (ts, state) DO NOTHING;</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p><code>COPY … FROM 'file.csv'</code> is DuckDB's bulk-loader — orders of magnitude faster than per-row <code>INSERT</code>. For an ingest of 50k UPower samples, it's milliseconds vs minutes.</p>
+                <p><code>ON CONFLICT (ts, state) DO NOTHING</code> makes the entire script <strong>safe to re-run</strong>. You can run it weekly, daily, whatever — duplicates are silently skipped because the PK already exists.</p>
+              </div>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <!-- powertop -->
+      <section id="bs-powertop">
+        <h2>battery-stats · powertop-capture.sh</h2>
+        <p class="meta">~/Documents/pulse/battery-stats/bin/powertop-capture.sh · 118 lines · bash + embedded python</p>
+        <p class="intro">Manual capture. PowerTop needs root to run and produces a notoriously messy CSV. This script asks for sudo via askpass, runs powertop for N seconds, then parses the "Top 10 Power Consumers" section with embedded Python.</p>
+
+        <details class="script">
+          <summary><span class="chev">▶</span><span class="fname">powertop-capture.sh</span><span class="desc">3 blocks · root + parse + store</span></summary>
+          <div class="body">
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>powertop-capture.sh</span><span class="range">L1–L24 · sudo askpass</span></div>
+<pre><code class="language-bash">#!/bin/bash
+set -euo pipefail
+
+DB="$HOME/Documents/battery-stats/battery.duckdb"
+DUCKDB="$HOME/.local/bin/duckdb"
+ASKPASS="${SUDO_ASKPASS:-$HOME/.local/bin/sudo-askpass}"
+
+DURATION="${1:-30}"
+shift || true
+NOTES="${*:-}"
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+CSV="$WORK/powertop.csv"
+
+echo "running powertop for ${DURATION}s (sudo askpass)..."
+SUDO_ASKPASS="$ASKPASS" sudo -A powertop --csv="$CSV" --time="$DURATION" &gt;/dev/null 2&gt;&amp;1</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p><code>sudo -A</code> tells sudo to ask for the password via the <code>SUDO_ASKPASS</code> helper instead of the TTY. The user has a custom askpass at <code>~/.local/bin/sudo-askpass</code> that pops a zenity dialog — this is essential because terminal-less invocations (Claude Code, scripts run via fish abbrs, etc.) can't prompt natively.</p>
+                <p><code>shift || true</code> is the safe way to discard <code>$1</code> when there might not be one — without <code>|| true</code>, <code>set -e</code> would kill the script on an empty arg list.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>powertop-capture.sh</span><span class="range">L32–L87 · embedded Python parser</span></div>
+<pre><code class="language-bash">python3 - "$CSV" "$WORK/parsed.csv" &lt;&lt;'PYEOF'
+import csv, sys, re
+src, dst = sys.argv[1], sys.argv[2]
+rows = []
+with open(src, newline='', encoding='utf-8', errors='replace') as f:
+    in_section = False
+    rank = 0
+    for line in f:
+        stripped = line.strip().strip(';').strip()
+        if 'Top 10 Power Consumers' in line or 'Overview of Software Power Consumers' in line:
+            in_section = True; rank = 0
+            continue
+        if in_section:
+            if not stripped or stripped.startswith('___') or stripped.startswith('* * *'):
+                if rank &gt; 0: in_section = False
+                continue
+            parts = [p.strip() for p in line.split(';')]
+            if len(parts) &gt;= 3 and any(parts):
+                desc = max(parts, key=len)
+                # try to pull wattage / wakeups
+                ...
+                rank += 1
+                rows.append((rank, desc[:200], parts[0][:100], wk, pw, 'process'))
+                if rank &gt;= 20: in_section = False
+PYEOF</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p><strong>Why embed Python in bash?</strong> PowerTop's CSV has section headers like <code>______; ; ;</code> and unpredictable column orders — parsing it in awk would be fragile. Python with a state machine is the right tool, but installing a separate <code>.py</code> file would split the script.</p>
+                <p><code>python3 - args &lt;&lt;'PYEOF' … PYEOF</code> is a bash trick: <code>-</code> means "read code from stdin" and the heredoc supplies it. Result: one file, two languages, no install.</p>
+                <p>The quoted <code>'PYEOF'</code> disables shell interpolation inside the Python — necessary because the script uses <code>$</code> in regexes that bash would otherwise mangle.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>powertop-capture.sh</span><span class="range">L92–L117 · DuckDB store</span></div>
+<pre><code class="language-sql">-- get next run_id
+INSERT INTO powertop_runs (run_id, captured_at, duration_seconds, on_ac, notes)
+SELECT
+    COALESCE((SELECT MAX(run_id) FROM powertop_runs), 0) + 1,
+    '$ts'::TIMESTAMP, $DURATION, $on_ac_bool,
+    NULLIF('$NOTES', '');
+
+CREATE TEMP TABLE staging (
+    rank INTEGER, description VARCHAR, usage VARCHAR,
+    wakeups_per_sec DOUBLE, pw_estimate_w DOUBLE, category VARCHAR
+);
+COPY staging FROM '$WORK/parsed.csv' (HEADER FALSE);
+
+INSERT INTO powertop_top_processes
+SELECT
+    (SELECT MAX(run_id) FROM powertop_runs) AS run_id,
+    rank, description, usage, wakeups_per_sec, pw_estimate_w, category
+FROM staging
+ON CONFLICT (run_id, rank, description) DO NOTHING;</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p><strong>Manual <code>run_id</code> autoincrement.</strong> DuckDB has <code>SEQUENCE</code> but the simpler <code>MAX(run_id) + 1</code> is fine for a manual-only table — there's no concurrent-insert risk since powertop runs are user-triggered.</p>
+                <p><code>NULLIF('$NOTES', '')</code> converts an empty notes string to SQL NULL so the column accurately distinguishes "no notes" from "user typed nothing".</p>
+                <p>Each powertop run produces one parent row in <code>powertop_runs</code> + up to 20 child rows in <code>powertop_top_processes</code>. Same star-schema pattern as <code>conversations</code> ↔ <code>conversation_tool_usage</code> in claude-stats.</p>
+              </div>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <!-- bs schema -->
+      <section id="bs-schema">
+        <h2>battery-stats · schema.sql</h2>
+        <p class="meta">~/Documents/pulse/battery-stats/schema.sql · 89 lines · sql</p>
+        <p class="intro">Six tables: <code>battery_samples</code> (raw poll), <code>upower_rate</code> + <code>upower_charge</code> (historical bulk), <code>discharge_sessions</code> + <code>daily_battery</code> (derived), and <code>powertop_runs</code> + <code>powertop_top_processes</code> (manual).</p>
+
+        <details class="script">
+          <summary><span class="chev">▶</span><span class="fname">schema.sql</span><span class="desc">2 blocks · raw + derived</span></summary>
+          <div class="body">
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>schema.sql</span><span class="range">L5–L23 · battery_samples (raw poller)</span></div>
+<pre><code class="language-sql">CREATE TABLE IF NOT EXISTS battery_samples (
+    ts                  TIMESTAMP NOT NULL,
+    energy_now_wh       DOUBLE NOT NULL,
+    energy_full_wh      DOUBLE NOT NULL,
+    energy_full_design_wh DOUBLE NOT NULL,
+    power_now_w         DOUBLE NOT NULL,        -- positive = drain or charge magnitude
+    voltage_v           DOUBLE NOT NULL,
+    capacity_pct        INTEGER NOT NULL,
+    cycle_count         INTEGER,
+    state               VARCHAR NOT NULL,       -- charging | discharging | full | not-charging
+    on_ac               BOOLEAN NOT NULL,
+    screen_active       BOOLEAN NOT NULL,       -- IdleHint=no AND ScreenSaver inactive
+    idle_hint           BOOLEAN NOT NULL,       -- raw IdleHint
+    screensaver_active  BOOLEAN NOT NULL,
+    brightness_pct      INTEGER,
+    PRIMARY KEY (ts)
+);</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>Single PK on <code>ts</code> — at 5-min cadence, you can never have two samples at exactly the same UTC second (and if you do, the <code>ON CONFLICT DO NOTHING</code> in the poller dedups).</p>
+                <p>Three "screen" columns (<code>screen_active</code>, <code>idle_hint</code>, <code>screensaver_active</code>) store both the derived signal AND its two inputs — so if the derivation rule changes, no data loss; you can re-derive from history.</p>
+              </div>
+            </div>
+
+            <div class="wb">
+              <div class="code-side">
+                <div class="filename"><span>schema.sql</span><span class="range">L42–L69 · discharge_sessions + daily_battery</span></div>
+<pre><code class="language-sql">-- discharge sessions (derived nightly): one row per "unplug to plug-in or shutdown"
+CREATE TABLE IF NOT EXISTS discharge_sessions (
+    session_id          INTEGER PRIMARY KEY,
+    start_ts            TIMESTAMP NOT NULL,
+    end_ts              TIMESTAMP NOT NULL,
+    duration_seconds    BIGINT NOT NULL,
+    start_pct           INTEGER NOT NULL,
+    end_pct             INTEGER NOT NULL,
+    energy_used_wh      DOUBLE NOT NULL,
+    sot_seconds         BIGINT NOT NULL,            -- screen-on-time during this session
+    screen_off_seconds  BIGINT NOT NULL,
+    avg_drain_w         DOUBLE,                     -- across whole session
+    avg_drain_w_sot     DOUBLE,                     -- only when screen was on (the honest number)
+    projected_full_runtime_hours DOUBLE             -- design / avg_drain_w_sot
+);
+
+-- daily roll-up: one row per calendar day
+CREATE TABLE IF NOT EXISTS daily_battery (
+    date                DATE PRIMARY KEY,
+    sot_minutes         INTEGER NOT NULL,
+    discharge_minutes   INTEGER NOT NULL,
+    total_discharge_wh  DOUBLE NOT NULL,
+    avg_drain_w_sot     DOUBLE,
+    n_sessions          INTEGER NOT NULL,
+    cycle_count_eod     INTEGER,                    -- end-of-day reading
+    energy_full_wh_eod  DOUBLE,                     -- for decay tracking
+    health_pct          DOUBLE                      -- energy_full / energy_full_design * 100
+);</code></pre>
+              </div>
+              <div class="why-side">
+                <h4>why</h4>
+                <p>Both tables are <strong>fully derivable from <code>battery_samples</code></strong> via <code>aggregate-daily.sh</code>. You can <code>DELETE FROM discharge_sessions</code> + run aggregate, and they rebuild identically. This is the "raw + derived, never just derived" principle in action.</p>
+                <p><code>health_pct</code> is what makes long-term battery analytics possible. Watching the EOD column drop from 95% → 80% over a year tells you what no other tool does.</p>
+              </div>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- Cross-cutting                                                 -->
+      <!-- ============================================================ -->
+
+      <section id="crosscut">
+        <h2>Cross-cutting patterns</h2>
+        <p class="intro">A handful of techniques show up in both projects. They aren't unique to pulse — they're "the right way" we converged on after a year of small bugs.</p>
+
+        <h3 class="subhead">1. systemd user timers, not cron <span class="what">(claude-stats nightly · battery-stats 5-min)</span></h3>
+        <div class="wb">
+          <div class="code-side">
+            <div class="filename"><span>claude-stats-ingest.timer</span><span class="range">full</span></div>
+<pre><code class="language-ini">[Unit]
+Description=claude-stats: nightly ingest at 02:00 (Persistent — fires on next boot if missed)
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+AccuracySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target</code></pre>
+          </div>
+          <div class="why-side">
+            <h4>why</h4>
+            <p><code>Persistent=true</code> is the critical flag. If the laptop is suspended at 02:00, the timer fires on next wake — no missed days, no manual catch-up. <code>cron</code> can't do this without third-party shims like <code>anacron</code>.</p>
+            <p><code>AccuracySec=15min</code> tells systemd "don't fire all timers at exactly 02:00 on every machine" — it adds jitter so the system isn't slammed by every <code>*-*-* 02:00:00</code> job at once.</p>
+          </div>
+        </div>
+
+        <h3 class="subhead">2. The timezone double-AT-TIME-ZONE pattern <span class="what">(everywhere display-time IST is needed)</span></h3>
+        <div class="callout"><strong>The rule:</strong> Store naive <code>TIMESTAMP</code> as UTC. To display as IST: <code>(col AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'</code>. A <em>single</em> <code>AT TIME ZONE</code> is a silent no-op — DuckDB doesn't know what zone the naive value started in, so the conversion does nothing.</div>
+        <div class="wb">
+          <div class="code-side">
+            <div class="filename"><span>aggregate-daily.sh</span><span class="range">tz pattern</span></div>
+<pre><code class="language-sql">-- ❌ wrong (silent no-op — does NOT shift)
+DATE_TRUNC('day', start_ts AT TIME ZONE 'Asia/Kolkata')
+
+-- ✓ right (attach to UTC first, then shift to IST)
+DATE_TRUNC('day', (start_ts AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata')</code></pre>
+          </div>
+          <div class="why-side">
+            <h4>why this is hard to spot</h4>
+            <p>Both queries <em>run</em>. Both return timestamps. The wrong one returns the same naive value back unchanged — so for someone in UTC, it looks fine. The bug only shows up if you're in IST (or any non-UTC tz) and your evening sessions silently bucket into tomorrow's date.</p>
+            <p>The fix is mechanical (wrap with <code>AT TIME ZONE 'UTC'</code>), but you have to <em>know</em> to do it. Once bitten, twice paranoid — every display query in pulse uses the double pattern.</p>
+          </div>
+        </div>
+
+        <h3 class="subhead">3. Self-contained HTML dashboards <span class="what">(both projects)</span></h3>
+        <div class="grid-2">
+          <div class="card">
+            <h5>One file, no server</h5>
+            <p><code>build-dashboard.sh</code> queries DuckDB, embeds JSON into JS as a const literal, ships Plotly via CDN, writes one <code>.html</code> file. <code>xdg-open</code> on it; browser does the rest.</p>
+          </div>
+          <div class="card">
+            <h5>Why not React / SvelteKit / etc.</h5>
+            <p>No npm. No build step. No framework upgrades to deal with. No <code>node_modules</code>. Pulse will run on a fresh Linux install in 30 seconds.</p>
+          </div>
+          <div class="card">
+            <h5>Why Plotly</h5>
+            <p>Single CDN URL, dozens of chart types, zoom/pan built in, exports to PNG. The AMOLED theme (<code>paper_bgcolor: '#000'</code>) makes the charts feel native to the OLED display.</p>
+          </div>
+          <div class="card">
+            <h5>The data-embed trick</h5>
+            <p><code>const DATA = { cost_ts: ${COST_TS:-[]}, … }</code>. Bash interpolates DuckDB's JSON output directly into a JS object literal. No fetch, no XHR, no async — the page is the data.</p>
+          </div>
+        </div>
+
+        <h3 class="subhead">4. Symlink install <span class="what">(install.sh → ~/Documents/{claude,battery}-stats/)</span></h3>
+        <div class="wb">
+          <div class="code-side">
+            <div class="filename"><span>install.sh</span><span class="range">conceptual</span></div>
+<pre><code class="language-bash">ln -sf "$REPO/claude-stats/bin/ingest-daily.sh"     ~/Documents/claude-stats/bin/
+ln -sf "$REPO/claude-stats/fish/claude-stats.fish"  ~/.config/fish/functions/
+ln -sf "$REPO/claude-stats/systemd/*.timer"         ~/.config/systemd/user/
+# (and the same for battery-stats)</code></pre>
+          </div>
+          <div class="why-side">
+            <h4>why</h4>
+            <p>Source of truth = the git repo. Live install = symlinks pointing at the repo. Edit a file in the repo → it's live immediately. <code>git pull</code> deploys.</p>
+            <p>The DBs live <strong>outside</strong> the symlink tree (in <code>~/Documents/{claude,battery}-stats/*.duckdb</code>) so they're gitignored and never accidentally committed.</p>
+            <p>Fresh laptop: <code>git clone + ./install.sh</code>. Two commands. No package manager, no build, no Docker.</p>
+          </div>
+        </div>
+
+        <h3 class="subhead">5. Raw + derived, never just derived <span class="what">(everywhere)</span></h3>
+        <div class="callout"><strong>The rule:</strong> Ingest writes <em>raw rows</em>. Roll-ups are SQL queries on top. If the rule changes (e.g., phantom-session filter, retention window, max-context formula), only the SQL changes — no backfill. Sleep well.</div>
+        <p style="color: var(--fg-dim); font-size: 14px; max-width: 760px;">
+          This is why <code>battery_samples</code> stores <code>idle_hint</code> + <code>screensaver_active</code> separately from <code>screen_active</code> — if you ever decide "screen_active should require BOTH idle hint AND screensaver, AND brightness &gt; 5%", you can re-derive instantly from history. If you'd only stored <code>screen_active</code>, that change would have no historical data.
+        </p>
+      </section>
+
+      <section style="padding-bottom: 60px;">
+        <h2>That's it</h2>
+        <p class="intro">Two CLIs, ten scripts, two DuckDB files, two HTML dashboards. Roughly 3,000 lines of shell + SQL + Python + minimal HTML/CSS/JS. No daemons, no servers, no npm, no Docker.</p>
+        <p class="intro">When something breaks (e.g. ccusage v19), the failure is loud (<code>set -euo pipefail</code>) and the fix is one or two lines. That's the whole point.</p>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+  <script src="_nav.js"></script>
+  <script>
+    // expand/collapse all
+    document.getElementById('expand-all').addEventListener('click', () => {
+      document.querySelectorAll('details.script').forEach(d => d.open = true);
+    });
+    document.getElementById('collapse-all').addEventListener('click', () => {
+      document.querySelectorAll('details.script').forEach(d => d.open = false);
+    });
+  </script>
+</body>
+</html>

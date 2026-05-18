@@ -137,8 +137,8 @@ systemctl --user start claude-stats-ingest.service</code></pre>
         <pre><code>pulse/
 ├── claude-stats/
 │   ├── bin/
-│   │   ├── ingest-daily.sh        <span class="tok-c"># ccusage daily → DuckDB</span>
-│   │   ├── ingest-sessions.py     <span class="tok-c"># JSONL walk + ccusage session</span>
+│   │   ├── ingest-daily.sh        <span class="tok-c"># ccusage claude daily → DuckDB</span>
+│   │   ├── ingest-sessions.py     <span class="tok-c"># JSONL walk → DuckDB</span>
 │   │   ├── cleanup-old.sh         <span class="tok-c"># 365-day retention</span>
 │   │   └── build-dashboard.sh     <span class="tok-c"># DuckDB → HTML+Plotly</span>
 │   ├── fish/claude-stats.fish     <span class="tok-c"># CLI: dashboard, ingest, raw</span>

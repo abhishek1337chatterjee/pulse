@@ -54,6 +54,26 @@ const PAGES = [
             { id: 'filemap',  label: 'File map' },
         ],
     },
+    {
+        id: 'walkthrough',
+        title: 'walkthrough',
+        href: 'walkthrough.html',
+        sections: [
+            { id: 'flow',              label: 'Data flow' },
+            { id: 'shape',             label: 'The shared shape' },
+            { id: 'cs-ingest-daily',   label: 'cs · ingest-daily.sh' },
+            { id: 'cs-ingest-sessions',label: 'cs · ingest-sessions.py' },
+            { id: 'cs-schema',         label: 'cs · schema.sql' },
+            { id: 'cs-cleanup',        label: 'cs · cleanup-old.sh' },
+            { id: 'cs-dashboard',      label: 'cs · build-dashboard.sh' },
+            { id: 'bs-poll',           label: 'bs · poll.sh' },
+            { id: 'bs-aggregate',      label: 'bs · aggregate-daily.sh' },
+            { id: 'bs-upower',         label: 'bs · ingest-upower.sh' },
+            { id: 'bs-powertop',       label: 'bs · powertop-capture.sh' },
+            { id: 'bs-schema',         label: 'bs · schema.sql' },
+            { id: 'crosscut',          label: 'Cross-cutting patterns' },
+        ],
+    },
 ];
 
 (function () {

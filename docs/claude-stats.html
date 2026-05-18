@@ -100,7 +100,7 @@
         </p>
 
         <div class="flow">
-            <div class="box cyan"><div class="label">source</div>2× npx ccusage daily<br><span style="color:var(--fg-muted)">plain + --instances --breakdown</span></div>
+            <div class="box cyan"><div class="label">source</div>2× npx ccusage claude daily<br><span style="color:var(--fg-muted)">plain + --instances --breakdown</span></div>
             <div class="arrow">→</div>
             <div class="box"><div class="label">reshape</div>2× jq → CSV<br><span style="color:var(--fg-muted)">flatten modelBreakdowns</span></div>
             <div class="arrow">→</div>
@@ -206,7 +206,7 @@ SELECT date, model, input_tokens, output_tokens,
             <li><strong>conversations</strong> — one row per JSONL (PK: <code>session_id</code> = filename stem)</li>
             <li><strong>conversation_tool_usage</strong> — one row per (session, tool); aggregated <code>call_count</code></li>
             <li><strong>conversation_skill_usage</strong> — one row per (session, skill); skill names are <code>&lt;plugin&gt;:&lt;name&gt;</code> for plugin-namespaced skills, or bare <code>&lt;name&gt;</code> for personal skills</li>
-            <li><strong>project_daily_usage</strong> (v4) — per-(project_path, date, model) cost from <code>ccusage daily --instances --breakdown --json</code>, populated alongside <code>daily_usage</code> in the same <code>ingest-daily.sh</code> run. Same 8-day rolling-rewrite discipline: rows older than 8 days are immutable. Sums to <code>daily_usage</code> exactly for any (date, model) where ccusage could see the JSONLs at ingest time. The dashboard's "Top projects" panel windows over this table.</li>
+            <li><strong>project_daily_usage</strong> (v4) — per-(project_path, date, model) cost from <code>ccusage claude daily --instances --breakdown --json</code>, populated alongside <code>daily_usage</code> in the same <code>ingest-daily.sh</code> run. Same 8-day rolling-rewrite discipline: rows older than 8 days are immutable. Sums to <code>daily_usage</code> exactly for any (date, model) where ccusage could see the JSONLs at ingest time. The dashboard's "Top projects" panel windows over this table.</li>
         </ul>
 
         <div class="callout">

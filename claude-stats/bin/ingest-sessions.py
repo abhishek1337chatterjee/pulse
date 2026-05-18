@@ -7,8 +7,8 @@ Writes: conversations, conversation_tool_usage, conversation_skill_usage.
 Idempotent via INSERT OR REPLACE.
 
 (Per-project cost lives in `project_daily_usage`, populated by ingest-daily.sh
-from `ccusage daily --instances --breakdown --json` — that table is the source
-of truth for the dashboard's "Top projects" panel.)
+from `ccusage claude daily --instances --breakdown --json` — that table is the
+source of truth for the dashboard's "Top projects" panel.)
 """
 
 import csv
