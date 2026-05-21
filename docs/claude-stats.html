@@ -41,9 +41,10 @@
                     <code>build-dashboard.sh</code> to regenerate
                     <code>/tmp/claude-stats-dashboard.html</code>, then
                     <code>xdg-open</code>s it. Plotly charts: cost stacked-by-model,
-                    daily token mix, cache hit rate, top tools, cost-by-model donut,
-                    top projects, context-window distribution. Pass <code>30</code> /
-                    <code>90</code> / <code>365</code> for different windows.
+                    daily token mix, cache hit rate, top tools, top skills (grouped by
+                    plugin), <strong>top subagents broken out by name</strong>,
+                    cost-by-model donut, top projects, context-window distribution. Pass
+                    <code>30</code> / <code>90</code> / <code>365</code> for different windows.
                 </div>
             </div>
         </div>
@@ -195,11 +196,29 @@ SELECT date, model, input_tokens, output_tokens,
         <ul class="tight">
             <li><code>started_at</code> / <code>ended_at</code> = min/max <code>timestamp</code> across lines</li>
             <li><code>cwd</code> / <code>gitBranch</code> = first non-null occurrence (sticky)</li>
-            <li><code>type=user</code> → increment <code>n_user_msgs</code></li>
-            <li><code>type=assistant</code> → increment <code>n_assistant_msgs</code>; track peak context (<code>input + cache_create + cache_read</code>); count tool-use blocks in <code>content[]</code>; for blocks with <code>name=Skill</code>, also count <code>input.skill</code> into a per-session skill tally</li>
+            <li><code>type=user</code> → increment <code>n_user_msgs</code>; for main sessions, scan <code>tool_result</code> blocks for <code>"agentId: &lt;hex&gt;"</code> and pair the hex back to the subagent_type from the matching <code>Agent</code> tool_use (see "Subagent name attribution" below)</li>
+            <li><code>type=assistant</code> → increment <code>n_assistant_msgs</code>; track peak context (<code>input + cache_create + cache_read</code>); count tool-use blocks in <code>content[]</code>; for blocks with <code>name=Skill</code>, also count <code>input.skill</code> into a per-session skill tally; for <code>name=Agent</code> (subagent dispatch), record <code>(tool_use_id → input.subagent_type)</code> for the agentId lookup above</li>
             <li><code>type=summary</code> → first one wins, capped at 500 chars</li>
             <li>Files with zero user+assistant msgs are skipped</li>
         </ul>
+
+        <h3>Subagent name attribution <span class="badge subtle">v5</span></h3>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Subagent JSONLs only know their own <code>agentId</code> — the
+            human-readable type (<code>general-purpose</code>,
+            <code>commit-writer</code>, etc.) lives in the <em>parent's</em>
+            <code>Agent</code> tool_use. <code>ingest-sessions.py</code> does a
+            two-pass match:
+        </p>
+        <ul class="tight">
+            <li>Pass 1: while parsing each main session, accumulate two maps — <code>tool_use_id → subagent_type</code> from <code>Agent</code> tool_use blocks, and <code>agent_id → subagent_type</code> by regex-matching <code>"agentId: &lt;hex&gt;"</code> out of the corresponding <code>tool_result</code>. Merge into a global map.</li>
+            <li>Pass 2: every subagent JSONL filename is <code>agent-&lt;hex&gt;.jsonl</code>. Strip the prefix, look up the type in the global map, write to <code>conversations.agent_type</code>. Subagents whose parent JSONL was already cleaned off disk stay <code>NULL</code> — the dashboard surfaces the unmatched count in the panel footer.</li>
+        </ul>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Steady-state match rate on currently-present JSONLs is ~94%. The
+            unmatched bucket only ever shrinks as older transcripts age out of
+            the 30-day display window.
+        </p>
 
         <h3>Storage</h3>
         <ul class="tight">
@@ -222,13 +241,13 @@ SELECT date, model, input_tokens, output_tokens,
     <section id="dashboard">
         <h2>How <code>build-dashboard.sh</code> works</h2>
         <p class="lead">
-            Self-contained HTML generator. Runs ~9 DuckDB queries, embeds the
+            Self-contained HTML generator. Runs ~12 DuckDB queries, embeds the
             results as a JSON literal in the page, ships Plotly via CDN, and lets
             the browser render everything client-side. No build step, no server.
         </p>
 
         <div class="flow">
-            <div class="box cyan"><div class="label">1. query</div>10× DuckDB<br><span style="color:var(--fg-muted)">-readonly -json</span></div>
+            <div class="box cyan"><div class="label">1. query</div>12× DuckDB<br><span style="color:var(--fg-muted)">-readonly -json</span></div>
             <div class="arrow">→</div>
             <div class="box"><div class="label">2. emit</div>HEREDOC HTML<br><span style="color:var(--fg-muted)">CSS + structure</span></div>
             <div class="arrow">→</div>
@@ -237,7 +256,7 @@ SELECT date, model, input_tokens, output_tokens,
             <div class="box good"><div class="label">4. open</div>xdg-open<br><span style="color:var(--fg-muted)">Plotly renders</span></div>
         </div>
 
-        <h3>The 10 queries embedded as <code>DATA</code></h3>
+        <h3>The 12 queries embedded as <code>DATA</code></h3>
         <div class="cmd-table">
             <div class="cmd-row"><div class="cmd">stats</div><div class="desc">6 KPI numbers (total cost, active days, total tokens, cache hit %, main sessions, tool calls).</div></div>
             <div class="cmd-row"><div class="cmd">dailyCost</div><div class="desc">Per (date × model) for the window — feeds the stacked-bar chart.</div></div>
@@ -246,6 +265,8 @@ SELECT date, model, input_tokens, output_tokens,
             <div class="cmd-row"><div class="cmd">cacheTrend</div><div class="desc">Cache hit % per date — feeds the spline + area chart.</div></div>
             <div class="cmd-row"><div class="cmd">topTools</div><div class="desc">Top 15 tools by total calls, with session count.</div></div>
             <div class="cmd-row"><div class="cmd">topSkills</div><div class="desc">Top 20 skills by total calls, split into <code>plugin</code> + <code>skill</code> for grouped/colored bars.</div></div>
+            <div class="cmd-row"><div class="cmd">topSubagents <span class="badge subtle">v5</span></div><div class="desc">Top 20 subagent types in the window — <code>SELECT agent_type, COUNT(*) AS sessions, SUM(n_tool_calls), AVG(n_tool_calls) FROM conversations WHERE kind='subagent' AND agent_type IS NOT NULL GROUP BY agent_type</code>. Drives the pink horizontal-bar panel.</div></div>
+            <div class="cmd-row"><div class="cmd">subagentCoverage <span class="badge subtle">v5</span></div><div class="desc">Two-column scalar: matched vs unmatched subagent rows in the window. Surfaces how many subagents are missing a parent JSONL (and therefore a name) — shown in the panel's footer.</div></div>
             <div class="cmd-row"><div class="cmd">topRepos</div><div class="desc">Top 12 projects in the window, from <code>project_daily_usage</code>. Cost is windowed (<code>SUM(cost) WHERE date &gt;= window GROUP BY project_path</code>) and reconciles to the cent against <code>daily_usage</code> for any date that was captured at ingest time.</div></div>
             <div class="cmd-row"><div class="cmd">attribution</div><div class="desc">Total/attributed/unattributed/% for the window. Surfaces how much of the windowed spend can still be tied to a project (vs. lost when JSONLs were <code>claude-clean</code>'d before being captured).</div></div>
             <div class="cmd-row"><div class="cmd">contextDist</div><div class="desc">Sessions bucketed by % of model context window used.</div></div>
@@ -325,6 +346,7 @@ SELECT date, model, input_tokens, output_tokens,
                 <tr><td class="col">max_context_tokens</td><td class="type">BIGINT</td><td class="note">Peak context size seen in any assistant turn</td></tr>
                 <tr><td class="col">model</td><td class="type">VARCHAR</td><td class="note">Model in use at the peak-context turn</td></tr>
                 <tr><td class="col">summary</td><td class="type">VARCHAR</td><td class="note">First <code>type=summary</code> event, capped at 500 chars</td></tr>
+                <tr><td class="col">agent_type <span class="badge subtle">v5</span></td><td class="type">VARCHAR</td><td class="note">Nullable. For <code>kind='subagent'</code>: the subagent_type from the parent's <code>Agent</code> tool_use (e.g. <code>general-purpose</code>, <code>commit-writer</code>). <code>NULL</code> for main sessions and for subagents whose parent JSONL is missing at ingest time. Queries must filter <code>WHERE kind='subagent' AND agent_type IS NOT NULL</code>.</td></tr>
             </tbody>
         </table>
 

@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS conversations (
 CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_path);
 CREATE INDEX IF NOT EXISTS idx_conversations_started ON conversations(started_at);
 
+-- v5: subagent_type from parent's Agent tool_use, matched via the agentId
+-- string emitted in the parent's tool_result. Only populated when kind='subagent'
+-- AND the parent JSONL is still on disk; NULL otherwise. Nullable on purpose —
+-- queries must filter `kind='subagent' AND agent_type IS NOT NULL`.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS agent_type VARCHAR;
+
 -- v2: per-tool call counts per conversation
 CREATE TABLE IF NOT EXISTS conversation_tool_usage (
     session_id VARCHAR,

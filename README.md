@@ -9,7 +9,7 @@ straight from `/tmp`.
 
 | | |
 |---|---|
-| **claude-stats** | Where your Claude Code spend goes. Cost by model, cache hit-rate, top tools, top skills (per plugin), top projects, context-window pressure. |
+| **claude-stats** | Where your Claude Code spend goes. Cost by model, cache hit-rate, top tools, top skills (per plugin), **top subagents (by name)**, top projects, context-window pressure. |
 | **battery-stats** | Real Screen-On-Time, drain-rate, battery health, hourly drain heatmap, charging-period bands. |
 
 Both share an AMOLED dark theme (true `#000000`, electric purple + cyan
@@ -31,8 +31,9 @@ claude-stats dashboard 365      # last year
 
 The dashboard is the surface — every metric is in there: cost stacked by
 model, daily token mix, cache hit rate, top tools, top skills grouped by
-plugin, top projects, context-window distribution. No terminal-table
-fallbacks; the graphs say more in less space.
+plugin, **top subagents broken out by name** (e.g. `general-purpose`,
+`commit-writer`), top projects, context-window distribution. No
+terminal-table fallbacks; the graphs say more in less space.
 
 ### battery-stats
 

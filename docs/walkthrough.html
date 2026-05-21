@@ -695,7 +695,7 @@ proc = subprocess.run([str(DUCKDB), str(DB)], input=sql, text=True, capture_outp
       <section id="cs-schema">
         <h2>claude-stats · schema.sql</h2>
         <p class="meta">~/Documents/pulse/claude-stats/schema.sql · 79 lines · sql</p>
-        <p class="intro">Five tables, all <code>CREATE TABLE IF NOT EXISTS</code> so <code>install.sh</code> can re-run safely. The schema versions itself in comments (v2 added subagent classification, v3 added skills, v4 split project cost out of <code>conversations</code>).</p>
+        <p class="intro">Five tables, all <code>CREATE TABLE IF NOT EXISTS</code> so <code>install.sh</code> can re-run safely. The schema versions itself in comments (v2 added subagent classification, v3 added skills, v4 split project cost out of <code>conversations</code>, v5 added <code>agent_type</code> for per-subagent name attribution).</p>
 
         <details class="script">
           <summary><span class="chev">▶</span><span class="fname">schema.sql</span><span class="desc">3 blocks · the 5 tables</span></summary>

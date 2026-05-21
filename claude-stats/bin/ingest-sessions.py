@@ -14,6 +14,7 @@ source of truth for the dashboard's "Top projects" panel.)
 import csv
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,11 @@ HOME = Path.home()
 PROJECTS = HOME / ".claude" / "projects"
 DB = HOME / "Documents" / "claude-stats" / "claude.duckdb"
 DUCKDB = HOME / ".local" / "bin" / "duckdb"
+
+# Subagent dispatch leaves "agentId: <hex>" in the parent's tool_result text.
+# That hex id matches the subagent JSONL filename (agent-<id>.jsonl), so we can
+# pair subagents with their subagent_type without depending on dispatch order.
+AGENT_ID_RE = re.compile(r"agentId:\s*([0-9a-f]+)")
 
 os.environ["PATH"] = (
     f"{HOME}/.nvm/versions/node/v24.14.1/bin:/usr/bin:/bin:" + os.environ.get("PATH", "")
@@ -46,6 +52,15 @@ def classify_path(path: Path):
 
 
 def parse_jsonl(path: Path):
+    """Parse one JSONL.
+
+    Returns (conv, tool_items, skill_items, agent_id_to_type) or None.
+
+    agent_id_to_type is only populated when kind='main' — it maps the agentId
+    extracted from each tool_result back to the subagent_type from the matching
+    Agent tool_use. The caller merges these across all parents and uses the
+    map to backfill the agent_type column on subagent rows.
+    """
     session_id = path.stem
     kind, project_path, parent_sid = classify_path(path)
     started_at = ended_at = cwd = git_branch = summary = None
@@ -54,6 +69,8 @@ def parse_jsonl(path: Path):
     max_ctx_model = ""
     tools: Counter = Counter()
     skills: Counter = Counter()
+    pending_agent_uses: dict = {}  # tool_use_id -> subagent_type (main only)
+    agent_id_to_type: dict = {}    # agent_id    -> subagent_type (main only)
 
     try:
         with path.open(errors="replace") as f:
@@ -82,6 +99,22 @@ def parse_jsonl(path: Path):
                     summary = d.get("summary")
                 elif t == "user":
                     n_user += 1
+                    if kind == "main" and pending_agent_uses:
+                        msg = d.get("message", {}) or {}
+                        content = msg.get("content") or []
+                        if isinstance(content, list):
+                            for block in content:
+                                if not isinstance(block, dict):
+                                    continue
+                                if block.get("type") != "tool_result":
+                                    continue
+                                tuid = block.get("tool_use_id")
+                                sub_type = pending_agent_uses.get(tuid)
+                                if not sub_type:
+                                    continue
+                                m = AGENT_ID_RE.search(json.dumps(block.get("content")))
+                                if m:
+                                    agent_id_to_type[m.group(1)] = sub_type
                 elif t == "assistant":
                     n_assistant += 1
                     msg = d.get("message", {}) or {}
@@ -107,6 +140,11 @@ def parse_jsonl(path: Path):
                                     skill_name = (block.get("input") or {}).get("skill")
                                     if skill_name:
                                         skills[skill_name] += 1
+                                elif name == "Agent" and kind == "main":
+                                    sub_type = (block.get("input") or {}).get("subagent_type")
+                                    tuid = block.get("id")
+                                    if sub_type and tuid:
+                                        pending_agent_uses[tuid] = sub_type
     except OSError as e:
         print(f"[ingest-sessions] skip {path}: {e}", file=sys.stderr)
         return None
@@ -129,8 +167,9 @@ def parse_jsonl(path: Path):
         "max_context_tokens": max_ctx,
         "model": max_ctx_model,
         "summary": (summary or "")[:500],
+        "agent_type": "",  # backfilled for subagents in main()
     }
-    return conv, list(tools.items()), list(skills.items())
+    return conv, list(tools.items()), list(skills.items()), agent_id_to_type
 
 
 def write_csv(rows, columns, path):
@@ -151,16 +190,17 @@ SELECT * FROM read_csv('{tmpdir}/conversations.csv',
     'started_at': 'TIMESTAMP', 'ended_at': 'TIMESTAMP',
     'n_user_msgs': 'INTEGER', 'n_assistant_msgs': 'INTEGER',
     'n_tool_calls': 'INTEGER', 'max_context_tokens': 'BIGINT',
-    'model': 'VARCHAR', 'summary': 'VARCHAR'
+    'model': 'VARCHAR', 'summary': 'VARCHAR', 'agent_type': 'VARCHAR'
   }});
 
 INSERT OR REPLACE INTO conversations
   (session_id, project_path, cwd, git_branch, kind, parent_session_id,
    started_at, ended_at, n_user_msgs, n_assistant_msgs, n_tool_calls,
-   max_context_tokens, model, summary, ingested_at)
+   max_context_tokens, model, summary, agent_type, ingested_at)
 SELECT session_id, project_path, cwd, git_branch, kind, parent_session_id,
        started_at, ended_at, n_user_msgs, n_assistant_msgs, n_tool_calls,
-       max_context_tokens, model, summary, CURRENT_TIMESTAMP
+       max_context_tokens, model, summary,
+       NULLIF(agent_type, '') AS agent_type, CURRENT_TIMESTAMP
 FROM staging_conv;
 
 CREATE OR REPLACE TEMP TABLE staging_tools AS
@@ -201,12 +241,15 @@ def main():
     tmpdir = Path(tempfile.mkdtemp(prefix="claude-stats-"))
     try:
         conv_rows, tool_rows, skill_rows = [], [], []
+        agent_type_map: dict = {}  # agent_id -> subagent_type, merged across all parents
+
         for jsonl in sorted(PROJECTS.rglob("*.jsonl")):
             result = parse_jsonl(jsonl)
             if not result:
                 continue
-            conv, tools, skills = result
+            conv, tools, skills, agent_map = result
             conv_rows.append(conv)
+            agent_type_map.update(agent_map)
             for tool_name, count in tools:
                 tool_rows.append(
                     {"session_id": conv["session_id"], "tool_name": tool_name, "call_count": count}
@@ -216,15 +259,31 @@ def main():
                     {"session_id": conv["session_id"], "skill_name": skill_name, "call_count": count}
                 )
 
+        # Backfill agent_type on subagent rows now that we've seen all parents.
+        # Subagent JSONL filenames are `agent-<hex>.jsonl`, so session_id == "agent-<hex>".
+        matched = total_sub = 0
+        for conv in conv_rows:
+            if conv["kind"] != "subagent":
+                continue
+            total_sub += 1
+            sid = conv["session_id"]
+            if sid.startswith("agent-"):
+                aid = sid[len("agent-"):]
+                t = agent_type_map.get(aid)
+                if t:
+                    conv["agent_type"] = t
+                    matched += 1
+
         write_csv(
             conv_rows,
             ["session_id", "project_path", "cwd", "git_branch", "kind", "parent_session_id",
              "started_at", "ended_at", "n_user_msgs", "n_assistant_msgs", "n_tool_calls",
-             "max_context_tokens", "model", "summary"],
+             "max_context_tokens", "model", "summary", "agent_type"],
             tmpdir / "conversations.csv",
         )
         write_csv(tool_rows, ["session_id", "tool_name", "call_count"], tmpdir / "tools.csv")
         write_csv(skill_rows, ["session_id", "skill_name", "call_count"], tmpdir / "skills.csv")
+        print(f"[ingest-sessions] subagent agent_type matched: {matched}/{total_sub}")
         duckdb_load(str(tmpdir))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)

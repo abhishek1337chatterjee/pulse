@@ -132,6 +132,33 @@ TOP_SKILLS=$(q "
     LIMIT 20;
 ")
 
+# top subagents by name — windowed, only rows where the parent JSONL was still on disk
+# at ingest time (agent_type IS NOT NULL). Matches /usage's per-agent breakdown.
+TOP_SUBAGENTS=$(q "
+    SELECT
+        agent_type,
+        COUNT(*)               AS sessions,
+        SUM(n_tool_calls)      AS total_tool_calls,
+        ROUND(AVG(n_tool_calls), 1) AS avg_tool_calls
+    FROM conversations
+    WHERE kind = 'subagent'
+      AND agent_type IS NOT NULL
+      AND started_at >= CURRENT_DATE - INTERVAL $DAYS DAY
+    GROUP BY agent_type
+    ORDER BY sessions DESC
+    LIMIT 20;
+")
+
+# unmatched subagent count for the panel footer (so the user knows what's missing)
+SUBAGENT_COVERAGE=$(q "
+    SELECT
+        COUNT(*) FILTER (WHERE agent_type IS NOT NULL) AS matched,
+        COUNT(*) FILTER (WHERE agent_type IS NULL)     AS unmatched
+    FROM conversations
+    WHERE kind = 'subagent'
+      AND started_at >= CURRENT_DATE - INTERVAL $DAYS DAY;
+")
+
 # top repos by cost — windowed, using project_daily_usage which mirrors daily_usage's
 # write semantics with a project_path dimension. Sums to daily_usage exactly for any
 # date ccusage could see at ingest time. Days with no project_daily_usage rows show up
@@ -243,6 +270,9 @@ ATTR_TOTAL=$(printf '%s' "$ATTRIBUTION"        | jq -r '.[0].total        // 0')
 ATTR_ATTRIBUTED=$(printf '%s' "$ATTRIBUTION"   | jq -r '.[0].attributed   // 0')
 ATTR_UNATTRIBUTED=$(printf '%s' "$ATTRIBUTION" | jq -r '.[0].unattributed // 0')
 ATTR_PCT=$(printf '%s' "$ATTRIBUTION"          | jq -r '.[0].attributed_pct // 100')
+
+SUB_MATCHED=$(printf   '%s' "$SUBAGENT_COVERAGE" | jq -r '.[0].matched   // 0')
+SUB_UNMATCHED=$(printf '%s' "$SUBAGENT_COVERAGE" | jq -r '.[0].unmatched // 0')
 
 # ---- emit HTML ----
 cat > "$OUT" <<'HEAD_EOF'
@@ -485,6 +515,12 @@ cat >> "$OUT" <<HEADER_EOF
     <div id="chart-skills" class="chart chart-tall"></div>
 </div>
 
+<div class="panel">
+    <h2>Top subagents (by name)</h2>
+    <div class="sub" style="margin: -8px 0 8px; color: var(--fg-dim); font-size: 12px;">$SUB_MATCHED matched &middot; $SUB_UNMATCHED unmatched (parent JSONL cleaned before ingest)</div>
+    <div id="chart-subagents" class="chart chart-tall"></div>
+</div>
+
 <div class="row-3">
     <div class="panel">
         <h2>Top projects in last $DAYS days</h2>
@@ -537,6 +573,7 @@ printf '    byModel: %s,\n'      "$BY_MODEL"     >> "$OUT"
 printf '    cacheTrend: %s,\n'   "$CACHE_TREND"  >> "$OUT"
 printf '    topTools: %s,\n'     "$TOP_TOOLS"    >> "$OUT"
 printf '    topSkills: %s,\n'    "$TOP_SKILLS"   >> "$OUT"
+printf '    topSubagents: %s,\n' "$TOP_SUBAGENTS" >> "$OUT"
 printf '    topRepos: %s,\n'     "$TOP_REPOS"    >> "$OUT"
 printf '    attribution: %s,\n'  "$ATTRIBUTION"  >> "$OUT"
 printf '    contextDist: %s,\n'  "$CONTEXT_DIST" >> "$OUT"
@@ -825,6 +862,36 @@ function renderSkills() {
     }), config);
 }
 
+// ---- top subagents horizontal bar (count of sessions per agent_type) ----
+function renderSubagents() {
+    const el = document.getElementById('chart-subagents');
+    if (!DATA.topSubagents.length) {
+        el.innerHTML = '<div class="empty">no matched subagents in window — dispatch an agent (Task tool) and run claude-stats ingest-sessions</div>';
+        return;
+    }
+    const sorted = [...DATA.topSubagents].reverse();
+    Plotly.newPlot('chart-subagents', [{
+        x: sorted.map(r => r.sessions),
+        y: sorted.map(r => r.agent_type),
+        type: 'bar',
+        orientation: 'h',
+        marker: { color: COLORS.pink, line: { width: 0 } },
+        text: sorted.map(r => r.sessions),
+        textposition: 'outside',
+        textfont: { color: COLORS.fgDim, size: 10 },
+        customdata: sorted.map(r => [r.total_tool_calls, r.avg_tool_calls]),
+        hovertemplate:
+            '<b>%{y}</b><br>%{x} sessions<br>' +
+            '%{customdata[0]:,} tool calls (avg %{customdata[1]}/session)<extra></extra>',
+    }], baseLayout({
+        margin: { l: 220, r: 50, t: 8, b: 30 },
+        yaxis: { gridcolor: 'transparent', zeroline: false, color: COLORS.fg,
+                 tickfont: { size: 11 }, automargin: true },
+        xaxis: { gridcolor: COLORS.border, zeroline: false, color: COLORS.fgDim },
+        showlegend: false,
+    }), config);
+}
+
 // ---- cost by model donut ----
 function renderModels() {
     if (!DATA.byModel.length) {
@@ -946,6 +1013,7 @@ renderTokens();
 renderCache();
 renderTools();
 renderSkills();
+renderSubagents();
 renderModels();
 renderRepos();
 renderContext();
