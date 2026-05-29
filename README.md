@@ -27,6 +27,8 @@ accents) — easy on OLED panels, easy on the eyes.
 claude-stats dashboard          # last 30 days, opens in browser
 claude-stats dashboard 90       # last quarter
 claude-stats dashboard 365      # last year
+claude-stats dashboard month 4  # a calendar month (April, year auto-resolved)
+claude-stats dashboard month 4 2025  # an explicit month + year
 ```
 
 The dashboard is the surface — every metric is in there: cost stacked by

@@ -35,7 +35,7 @@
         <h3>The display surface <span class="badge purple">interactive</span></h3>
         <div class="cmd-table">
             <div class="cmd-row">
-                <div class="cmd">claude-stats dashboard <span class="arg">[days=30]</span></div>
+                <div class="cmd">claude-stats dashboard <span class="arg">[days=30 | month M [Y]]</span></div>
                 <div class="desc">
                     <strong>The only display command.</strong> Calls
                     <code>build-dashboard.sh</code> to regenerate
@@ -43,8 +43,13 @@
                     <code>xdg-open</code>s it. Plotly charts: cost stacked-by-model,
                     daily token mix, cache hit rate, top tools, top skills (grouped by
                     plugin), <strong>top subagents broken out by name</strong>,
-                    cost-by-model donut, top projects, context-window distribution. Pass
-                    <code>30</code> / <code>90</code> / <code>365</code> for different windows.
+                    cost-by-model donut, top projects, context-window distribution.
+                    Pass <code>30</code> / <code>90</code> / <code>365</code> for a
+                    rolling day window, or <code>month M [Y]</code>
+                    (<code>M</code>=1&ndash;12) for a single calendar month &mdash; the
+                    year is optional and resolves to the most recent occurrence
+                    (bounded by 365-day retention). Both modes drive the same
+                    half-open <code>[start, end)</code> date filter in every query.
                 </div>
             </div>
         </div>

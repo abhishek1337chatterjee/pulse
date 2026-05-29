@@ -17,12 +17,24 @@ function claude-stats --description "Local Claude Code usage analytics — opens
             return 0
 
         case dashboard
-            set -l days "$rest[1]"
-            if test -z "$days"
-                set days 30
+            # arg forms:  dashboard [days=30]  |  dashboard month M [Y]
+            set -l spec
+            if test "$rest[1]" = month
+                set -l m "$rest[2]"
+                if not string match -qr '^[0-9]+$' -- "$m"; or test "$m" -lt 1 -o "$m" -gt 12
+                    echo "claude-stats dashboard month: needs a month 1-12 (e.g. dashboard month 4 [2025])"
+                    return 1
+                end
+                set spec "month:$m"
+                test -n "$rest[3]"; and set spec "month:$m:$rest[3]"
+            else
+                set spec "$rest[1]"
+                test -z "$spec"; and set spec 30
             end
             set -l out "/tmp/claude-stats-dashboard.html"
-            ~/Documents/claude-stats/bin/build-dashboard.sh $days $out >/dev/null
+            if not ~/Documents/claude-stats/bin/build-dashboard.sh $spec $out >/dev/null
+                return 1
+            end
             echo "wrote $out"
             if command -q xdg-open
                 xdg-open "$out" >/dev/null 2>&1 &
@@ -56,7 +68,11 @@ function _claude_stats_help
     echo "  claude-stats dashboard [days=30]          opens /tmp/claude-stats-dashboard.html"
     echo "                                            (Plotly: cost, tokens, cache,"
     echo "                                             tools, models, repos, context)"
-    echo "                                            window: 30 / 90 / 365 days"
+    echo "                                            rolling window: 30 / 90 / 365 days"
+    echo "  claude-stats dashboard month M [Y]        a calendar month (M=1-12)"
+    echo "                                            year optional; defaults to the most"
+    echo "                                            recent occurrence (limited by 365-day"
+    echo "                                            retention). e.g. dashboard month 4 2025"
     echo
     echo "MAINTENANCE:"
     echo "  claude-stats ingest [SINCE]               daily ccusage ingest (SINCE=YYYYMMDD, default -8d)"

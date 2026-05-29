@@ -5,8 +5,61 @@ set -euo pipefail
 
 DB="$HOME/Documents/claude-stats/claude.duckdb"
 DUCKDB="$HOME/.local/bin/duckdb"
-DAYS="${1:-30}"
+SPEC="${1:-30}"
 OUT="${2:-/tmp/claude-stats-dashboard.html}"
+
+# ---- resolve the time window ----
+# SPEC is either an integer day-count (rolling window, default 30) or
+# "month:M[:Y]" for a calendar month. Produces, for every query below:
+#   WIN_LO / WIN_HI  — SQL date-literal bounds, used half-open: [WIN_LO, WIN_HI)
+#   WINDOW_LABEL     — human label shown in the header
+#   WINDOW_DAYS      — denominator for the "active / N days" header stat
+#   REBUILD_HINT     — the invocation echoed in the footer
+case "$SPEC" in
+    month:*)
+        IFS=':' read -r _ MONTH YEAR <<< "$SPEC"
+        if ! [[ "$MONTH" =~ ^[0-9]+$ ]] || [ "$MONTH" -lt 1 ] || [ "$MONTH" -gt 12 ]; then
+            echo "claude-stats: month must be 1-12 (got '$MONTH')" >&2
+            exit 1
+        fi
+        if [ -z "$YEAR" ]; then
+            # smart fallback: a month later than the current one means last year
+            cur_year=$(date +%Y); cur_month=$(date +%-m)
+            if [ "$MONTH" -gt "$cur_month" ]; then
+                YEAR=$((cur_year - 1))
+            else
+                YEAR="$cur_year"
+            fi
+        fi
+        if ! [[ "$YEAR" =~ ^[0-9]{4}$ ]]; then
+            echo "claude-stats: year must be 4 digits (got '$YEAR')" >&2
+            exit 1
+        fi
+        MM=$(printf '%02d' "$MONTH")
+        WIN_LO="DATE '$YEAR-$MM-01'"
+        WIN_HI="DATE '$(date -d "$YEAR-$MM-01 +1 month" +%Y-%m-%d)'"   # first of next month, exclusive
+        WINDOW_LABEL="$(date -d "$YEAR-$MM-01" +'%B %Y')"
+        WINDOW_DAYS="$(date -d "$YEAR-$MM-01 +1 month -1 day" +%-d)"   # days in this month
+        REBUILD_HINT="claude-stats dashboard month $MONTH $YEAR"
+        ;;
+    *)
+        if ! [[ "$SPEC" =~ ^[0-9]+$ ]]; then
+            echo "claude-stats: arg must be a day count or 'month M [Y]' (got '$SPEC')" >&2
+            exit 1
+        fi
+        DAYS="$SPEC"
+        WIN_LO="CURRENT_DATE - INTERVAL $DAYS DAY"
+        WIN_HI="CURRENT_DATE + INTERVAL 1 DAY"          # tomorrow, exclusive (keeps today)
+        WINDOW_LABEL="last $DAYS days"
+        WINDOW_DAYS="$DAYS"
+        REBUILD_HINT="claude-stats dashboard [days=$DAYS]"
+        ;;
+esac
+
+# bounded predicates spliced into every windowed query (half-open [LO, HI))
+WHERE_DATE="date >= $WIN_LO AND date < $WIN_HI"
+WHERE_STARTED="started_at >= $WIN_LO AND started_at < $WIN_HI"
+WHERE_CSTARTED="c.started_at >= $WIN_LO AND c.started_at < $WIN_HI"
 
 if [ ! -f "$DB" ]; then
     echo "claude-stats: db not found at $DB" >&2
@@ -21,7 +74,7 @@ q() { "$DUCKDB" -readonly -json "$DB" "$1"; }
 # headline stats
 STATS=$(q "
     WITH win AS (
-        SELECT * FROM daily_usage WHERE date >= CURRENT_DATE - INTERVAL $DAYS DAY
+        SELECT * FROM daily_usage WHERE $WHERE_DATE
     ),
     convo AS (
         SELECT
@@ -29,12 +82,12 @@ STATS=$(q "
             COUNT(*) FILTER (WHERE kind = 'subagent') AS n_subagent,
             SUM(n_tool_calls)                         AS total_tool_calls
         FROM conversations
-        WHERE started_at >= CURRENT_DATE - INTERVAL $DAYS DAY
+        WHERE $WHERE_STARTED
     )
     SELECT
         ROUND(SUM(cost), 2)                                                    AS total_cost,
         COUNT(DISTINCT date)                                                   AS active_days,
-        $DAYS                                                                  AS window_days,
+        $WINDOW_DAYS                                                           AS window_days,
         SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) AS total_tokens,
         SUM(cache_read_tokens)                                                 AS cache_reads,
         SUM(cache_creation_tokens + input_tokens)                              AS uncached_eq,
@@ -54,7 +107,7 @@ DAILY_COST=$(q "
         model,
         ROUND(SUM(cost), 4) AS cost
     FROM daily_usage
-    WHERE date >= CURRENT_DATE - INTERVAL $DAYS DAY
+    WHERE $WHERE_DATE
     GROUP BY date, model
     ORDER BY date, model;
 ")
@@ -68,7 +121,7 @@ DAILY_TOKENS=$(q "
         SUM(cache_creation_tokens) AS cache_creation_tokens,
         SUM(cache_read_tokens)     AS cache_read_tokens
     FROM daily_usage
-    WHERE date >= CURRENT_DATE - INTERVAL $DAYS DAY
+    WHERE $WHERE_DATE
     GROUP BY date
     ORDER BY date;
 ")
@@ -81,7 +134,7 @@ BY_MODEL=$(q "
         SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) AS tokens,
         COUNT(DISTINCT date) AS active_days
     FROM daily_usage
-    WHERE date >= CURRENT_DATE - INTERVAL $DAYS DAY
+    WHERE $WHERE_DATE
     GROUP BY model
     ORDER BY cost DESC;
 ")
@@ -93,7 +146,7 @@ CACHE_TREND=$(q "
         ROUND(SUM(cache_read_tokens) * 100.0
               / NULLIF(SUM(input_tokens + cache_creation_tokens + cache_read_tokens), 0), 2) AS cache_hit_pct
     FROM daily_usage
-    WHERE date >= CURRENT_DATE - INTERVAL $DAYS DAY
+    WHERE $WHERE_DATE
     GROUP BY date
     ORDER BY date;
 ")
@@ -106,7 +159,7 @@ TOP_TOOLS=$(q "
         COUNT(DISTINCT t.session_id) AS sessions
     FROM conversation_tool_usage t
     JOIN conversations c USING (session_id)
-    WHERE c.started_at >= CURRENT_DATE - INTERVAL $DAYS DAY
+    WHERE $WHERE_CSTARTED
     GROUP BY t.tool_name
     ORDER BY total_calls DESC
     LIMIT 15;
@@ -126,7 +179,7 @@ TOP_SKILLS=$(q "
         COUNT(DISTINCT s.session_id) AS sessions
     FROM conversation_skill_usage s
     JOIN conversations c USING (session_id)
-    WHERE c.started_at >= CURRENT_DATE - INTERVAL $DAYS DAY
+    WHERE $WHERE_CSTARTED
     GROUP BY plugin, full_name, skill
     ORDER BY total_calls DESC
     LIMIT 20;
@@ -143,7 +196,7 @@ TOP_SUBAGENTS=$(q "
     FROM conversations
     WHERE kind = 'subagent'
       AND agent_type IS NOT NULL
-      AND started_at >= CURRENT_DATE - INTERVAL $DAYS DAY
+      AND $WHERE_STARTED
     GROUP BY agent_type
     ORDER BY sessions DESC
     LIMIT 20;
@@ -156,7 +209,7 @@ SUBAGENT_COVERAGE=$(q "
         COUNT(*) FILTER (WHERE agent_type IS NULL)     AS unmatched
     FROM conversations
     WHERE kind = 'subagent'
-      AND started_at >= CURRENT_DATE - INTERVAL $DAYS DAY;
+      AND $WHERE_STARTED;
 ")
 
 # top repos by cost — windowed, using project_daily_usage which mirrors daily_usage's
@@ -171,7 +224,7 @@ TOP_REPOS=$(q "
             MAX(date)                          AS last_activity,
             STRING_AGG(DISTINCT model, ', ')   AS models_used
         FROM project_daily_usage
-        WHERE date >= CURRENT_DATE - INTERVAL $DAYS DAY
+        WHERE $WHERE_DATE
         GROUP BY project_path
     ),
     conv AS (
@@ -182,7 +235,7 @@ TOP_REPOS=$(q "
             COUNT(*) FILTER (WHERE kind = 'subagent') AS n_subagent,
             SUM(n_tool_calls)                         AS total_tool_calls
         FROM conversations
-        WHERE started_at >= CURRENT_DATE - INTERVAL $DAYS DAY
+        WHERE $WHERE_STARTED
         GROUP BY project_path
     )
     SELECT
@@ -202,8 +255,8 @@ TOP_REPOS=$(q "
 # attribution gap for the window — daily_usage is the truth; project_daily_usage
 # is what we could attribute. Difference = JSONLs deleted before capture.
 ATTRIBUTION=$(q "
-    WITH d AS (SELECT COALESCE(SUM(cost), 0) AS total FROM daily_usage         WHERE date >= CURRENT_DATE - INTERVAL $DAYS DAY),
-         p AS (SELECT COALESCE(SUM(cost), 0) AS attributed FROM project_daily_usage WHERE date >= CURRENT_DATE - INTERVAL $DAYS DAY)
+    WITH d AS (SELECT COALESCE(SUM(cost), 0) AS total FROM daily_usage         WHERE $WHERE_DATE),
+         p AS (SELECT COALESCE(SUM(cost), 0) AS attributed FROM project_daily_usage WHERE $WHERE_DATE)
     SELECT
         ROUND((SELECT total      FROM d), 2) AS total,
         ROUND((SELECT attributed FROM p), 2) AS attributed,
@@ -228,7 +281,7 @@ CONTEXT_DIST=$(q "
         FROM conversations
         WHERE kind = 'main'
           AND max_context_tokens > 0
-          AND started_at >= CURRENT_DATE - INTERVAL $DAYS DAY
+          AND $WHERE_STARTED
     )
     SELECT
         CASE
@@ -476,7 +529,7 @@ cat >> "$OUT" <<HEADER_EOF
     <div class="brand">
         <div class="dot"></div>
         <h1>claude-stats</h1>
-        <span class="sub">window: last $DAYS days</span>
+        <span class="sub">window: $WINDOW_LABEL</span>
     </div>
     <div class="sub">generated $GENERATED_AT &middot; <code>$DB</code></div>
 </div>
@@ -523,7 +576,7 @@ cat >> "$OUT" <<HEADER_EOF
 
 <div class="row-3">
     <div class="panel">
-        <h2>Top projects in last $DAYS days</h2>
+        <h2>Top projects &middot; $WINDOW_LABEL</h2>
         <div class="sub" style="margin: -8px 0 8px; color: var(--fg-dim); font-size: 12px;">\$$ATTR_ATTRIBUTED of \$$ATTR_TOTAL attributed (${ATTR_PCT}%) &middot; \$$ATTR_UNATTRIBUTED unattributable (cleaned/missing JSONLs)</div>
         <div id="chart-repos" class="chart chart-tall"></div>
     </div>
@@ -555,7 +608,7 @@ cat >> "$OUT" <<HEADER_EOF
 </div>
 
 <footer>
-    rebuild: <code>claude-stats dashboard [days=$DAYS]</code> &middot;
+    rebuild: <code>$REBUILD_HINT</code> &middot;
     raw queries: <code>~/.local/bin/duckdb -readonly $DB</code>
 </footer>
 HEADER_EOF
