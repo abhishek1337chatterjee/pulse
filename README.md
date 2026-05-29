@@ -30,10 +30,11 @@ claude-stats dashboard 365      # last year
 ```
 
 The dashboard is the surface — every metric is in there: cost stacked by
-model, daily token mix, cache hit rate, top tools, top skills grouped by
-plugin, **top subagents broken out by name** (e.g. `general-purpose`,
-`commit-writer`), top projects, context-window distribution. No
-terminal-table fallbacks; the graphs say more in less space.
+model (each family keeps its hue, newer versions render brighter — so a new
+Claude release is distinct automatically), daily token mix, cache hit rate,
+top tools, top skills grouped by plugin, **top subagents broken out by name**
+(e.g. `general-purpose`, `commit-writer`), top projects, context-window
+distribution. No terminal-table fallbacks; the graphs say more in less space.
 
 ### battery-stats
 
