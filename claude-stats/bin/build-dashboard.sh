@@ -599,21 +599,74 @@ const COLORS = {
     teal: '#14b8a6',
 };
 
-// stable color per model
+// stable color per model — family hue, version-ranked lightness.
+// Each family keeps its brand hue (opus=purple, sonnet=cyan, haiku=green); the
+// NEWEST version present gets the bright brand shade and each older sibling dims
+// one step. Fully automatic: a new model id slots in by the version embedded in
+// its name (claude-opus-4-8 -> 408), so a future model needs no code change.
+const MODEL_FAMILIES = {
+    opus:   { h: 255, s: 92 },
+    sonnet: { h: 189, s: 86 },
+    haiku:  { h: 142, s: 71 },
+};
+const MODEL_BASE_L  = 76;   // newest version lightness (matches today's brand hexes)
+const MODEL_L_STEP  = 10;   // dim per older version
+const MODEL_L_FLOOR = 38;   // never darker than this (stays legible on AMOLED black)
+
+function familyOf(m) {
+    if (!m) return null;
+    if (m.includes('opus'))   return 'opus';
+    if (m.includes('sonnet')) return 'sonnet';
+    if (m.includes('haiku'))  return 'haiku';
+    return null;
+}
+
+// version sort key from "...-MAJOR-MINOR..." (claude-opus-4-7 -> 407); higher = newer
+function versionKey(m) {
+    const x = (m || '').match(/-(\d+)-(\d+)/);
+    return x ? Number(x[1]) * 100 + Number(x[2]) : 0;
+}
+
+// built lazily from every model id across the dataset, memoized for the page
+let _modelColorMap = null;
+function buildModelColorMap() {
+    const ids = new Set();
+    for (const src of [DATA.dailyCost, DATA.byModel, DATA.sessions]) {
+        if (Array.isArray(src)) src.forEach(r => { if (r && r.model) ids.add(r.model); });
+    }
+    const byFamily = {};
+    for (const id of ids) {
+        const fam = familyOf(id);
+        if (fam) (byFamily[fam] ||= []).push(id);
+    }
+    const map = {};
+    for (const fam of Object.keys(byFamily)) {
+        const { h, s } = MODEL_FAMILIES[fam];
+        const ranked = byFamily[fam].sort((a, b) => versionKey(b) - versionKey(a));
+        const rankByVersion = {};   // same version => same shade
+        let nextRank = 0;
+        for (const id of ranked) {
+            const vk = versionKey(id);
+            if (!(vk in rankByVersion)) rankByVersion[vk] = nextRank++;
+            const l = Math.max(MODEL_L_FLOOR, MODEL_BASE_L - rankByVersion[vk] * MODEL_L_STEP);
+            map[id] = `hsl(${h}, ${s}%, ${l}%)`;
+        }
+    }
+    return map;
+}
+
 function colorForModel(m) {
     if (!m) return COLORS.fgDim;
-    if (m.includes('opus'))   return COLORS.primary;
-    if (m.includes('sonnet')) return COLORS.secondary;
-    if (m.includes('haiku'))  return COLORS.good;
-    return COLORS.warn;
+    if (!_modelColorMap) _modelColorMap = buildModelColorMap();
+    return _modelColorMap[m] || COLORS.warn;
 }
 
 function tagForModel(m) {
     if (!m) return '';
-    if (m.includes('opus'))   return `<span class="tag opus">${m}</span>`;
-    if (m.includes('sonnet')) return `<span class="tag sonnet">${m}</span>`;
-    if (m.includes('haiku'))  return `<span class="tag haiku">${m}</span>`;
-    return `<span class="tag">${m}</span>`;
+    const fam = familyOf(m);
+    if (!fam) return `<span class="tag">${m}</span>`;
+    // family-soft background from the CSS class; text color carries the version shade
+    return `<span class="tag ${fam}" style="color:${colorForModel(m)}">${m}</span>`;
 }
 
 function fmtNum(n) {

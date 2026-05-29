@@ -289,7 +289,11 @@ SELECT date, model, input_tokens, output_tokens,
 
         <p style="color:var(--fg-dim);font-size:13px;">
             Stable per-model coloring is done in JS via <code>colorForModel(m)</code>
-            — opus → primary, sonnet → secondary, haiku → good, others → warn.
+            — each family keeps its brand hue (opus → purple, sonnet → cyan,
+            haiku → green), and lightness is ranked by the version embedded in the
+            model id. The newest version present gets the bright brand shade; each
+            older sibling dims one step. A future model (e.g. <code>opus-4-9</code>)
+            slots in by its version with no code change.
         </p>
     </section>
 
