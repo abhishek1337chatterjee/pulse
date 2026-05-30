@@ -5,8 +5,15 @@
 
 set -euo pipefail
 
-# Cron-safe PATH: jq lives in /usr/bin, npx in nvm
-export PATH="${HOME}/.nvm/versions/node/v24.14.1/bin:/usr/bin:/bin:${PATH:-}"
+# Cron-safe PATH. Node comes from nvm, whose version dir changes on every
+# upgrade — pinning one 127s the moment nvm bumps node. Source nvm.sh so we
+# follow the `default` alias instead. nvm.sh isn't set -eu clean, so guard it.
+export NVM_DIR="${HOME}/.nvm"
+set +eu
+# shellcheck disable=SC1091
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1
+set -eu
+export PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
 
 DB="${HOME}/Documents/claude-stats/claude.duckdb"
 DUCKDB="${HOME}/.local/bin/duckdb"

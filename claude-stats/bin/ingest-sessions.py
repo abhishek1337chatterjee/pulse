@@ -32,8 +32,10 @@ DUCKDB = HOME / ".local" / "bin" / "duckdb"
 # pair subagents with their subagent_type without depending on dispatch order.
 AGENT_ID_RE = re.compile(r"agentId:\s*([0-9a-f]+)")
 
+# Only needs python3 (already running) + duckdb (absolute path below); no node.
+# Point at ~/.local/bin for duckdb rather than a pinned nvm version that rots.
 os.environ["PATH"] = (
-    f"{HOME}/.nvm/versions/node/v24.14.1/bin:/usr/bin:/bin:" + os.environ.get("PATH", "")
+    f"{HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin:" + os.environ.get("PATH", "")
 )
 
 

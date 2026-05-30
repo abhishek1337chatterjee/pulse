@@ -154,11 +154,14 @@ SELECT date, model, input_tokens, output_tokens,
 
         <div class="callout warn">
             <div class="label">Cron-safe PATH</div>
-            The script exports an explicit <code>PATH</code> at the top because
-            cron / systemd timers don't inherit your shell's PATH:
-            <code>~/.nvm/versions/node/v24.14.1/bin:/usr/bin:/bin:$PATH</code>.
-            Without this, <code>npx</code> isn't found and the ingest silently
-            fails. If you upgrade Node via nvm, update this path.
+            cron / systemd timers don't inherit your shell's PATH, so the script
+            sources nvm at the top (<code>. ~/.nvm/nvm.sh</code>) and then adds
+            <code>~/.local/bin:/usr/local/bin:/usr/bin:/bin</code>. Sourcing nvm
+            follows your <code>default</code> alias, so a Node upgrade needs
+            <em>no</em> edits. The earlier version pinned
+            <code>~/.nvm/versions/node/vX/bin</code> directly — the moment nvm
+            bumped Node, that dir vanished, <code>npx</code> 127'd, and the
+            nightly job died silently for days. Sourcing nvm removes the pin.
         </div>
     </section>
 

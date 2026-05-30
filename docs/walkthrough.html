@@ -308,7 +308,7 @@
 
             <div class="wb">
               <div class="code-side">
-                <div class="filename"><span>ingest-daily.sh</span><span class="range">L1–L9 · setup</span></div>
+                <div class="filename"><span>ingest-daily.sh</span><span class="range">L1–L15 · setup</span></div>
 <pre><code class="language-bash">#!/usr/bin/env bash
 # Ingest Claude Code daily usage from ccusage into DuckDB.
 # Usage: ingest-daily.sh [SINCE_YYYYMMDD]
@@ -316,13 +316,18 @@
 
 set -euo pipefail
 
-# Cron-safe PATH: jq lives in /usr/bin, npx in nvm
-export PATH="${HOME}/.nvm/versions/node/v24.14.1/bin:/usr/bin:/bin:${PATH:-}"</code></pre>
+# Cron-safe PATH. Node comes from nvm; source nvm.sh so we follow the
+# `default` alias instead of pinning a version dir that rots on upgrade.
+export NVM_DIR="${HOME}/.nvm"
+set +eu
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1
+set -eu
+export PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"</code></pre>
               </div>
               <div class="why-side">
                 <h4>why</h4>
                 <p><code>set -euo pipefail</code> turns silent failures loud: <code>-e</code> exits on any error, <code>-u</code> on unset variables, <code>-o pipefail</code> on any pipe-segment failure. Without <code>pipefail</code>, <code>ccusage | jq …</code> would swallow ccusage crashes.</p>
-                <p>The <strong>PATH export</strong> exists because systemd timers inherit a minimal PATH. Without this, <code>npx</code> isn't found and the nightly job dies silently in journalctl.</p>
+                <p>systemd timers inherit a minimal PATH, so we <strong>source nvm</strong> to get <code>npx</code> on PATH. Sourcing follows the <code>default</code> alias — a Node upgrade needs no edits. (An earlier pinned <code>…/node/vX/bin</code> path 127'd the day nvm bumped Node, freezing the job for days.) nvm.sh isn't <code>set -eu</code> clean, so the <code>set +eu … set -eu</code> guard keeps strict mode everywhere else.</p>
               </div>
             </div>
 
@@ -525,13 +530,14 @@ PROJECTS = HOME / ".claude" / "projects"
 DB = HOME / "Documents" / "claude-stats" / "claude.duckdb"
 DUCKDB = HOME / ".local" / "bin" / "duckdb"
 
+# Only needs python3 (already running) + duckdb (absolute path above); no node.
 os.environ["PATH"] = (
-    f"{HOME}/.nvm/versions/node/v24.14.1/bin:/usr/bin:/bin:" + os.environ.get("PATH", "")
+    f"{HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin:" + os.environ.get("PATH", "")
 )</code></pre>
               </div>
               <div class="why-side">
                 <h4>why</h4>
-                <p>Same cron-safe PATH dance as the bash script — systemd's minimal PATH won't find <code>duckdb</code> in <code>~/.local/bin</code>.</p>
+                <p>Cron-safe PATH, but lighter than the bash script: this one needs <code>duckdb</code> from <code>~/.local/bin</code>, not <code>npx</code> — so it skips nvm entirely and never pinned a Node version worth rotting.</p>
                 <p>Standard-lib only — <code>csv</code>, <code>json</code>, <code>Counter</code>, <code>Path</code>. No pip dependencies means <strong>nothing to break across Python upgrades</strong>. Even <code>shutil</code> + <code>tempfile</code> are stdlib.</p>
               </div>
             </div>
