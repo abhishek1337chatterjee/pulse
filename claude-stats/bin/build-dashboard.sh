@@ -354,6 +354,16 @@ ATTR_PCT=$(printf '%s' "$ATTRIBUTION"          | jq -r '.[0].attributed_pct // 1
 SUB_MATCHED=$(printf   '%s' "$SUBAGENT_COVERAGE" | jq -r '.[0].matched   // 0')
 SUB_UNMATCHED=$(printf '%s' "$SUBAGENT_COVERAGE" | jq -r '.[0].unmatched // 0')
 
+# caveman panel subtitle scalar: the plugin's LIFETIME estimate total (all-time,
+# not windowed — it mirrors the statusline badge). Shown as labeled text only,
+# never charted next to the measured bars.
+CAVEMAN_EST_RAW=$(q "SELECT COALESCE(SUM(est_saved_tokens), 0) AS t FROM caveman_sessions;" | jq -r '.[0].t // 0')
+CAVEMAN_EST_FMT=$(awk -v t="$CAVEMAN_EST_RAW" 'BEGIN {
+    if (t >= 1e6)      printf "%.1fM", t / 1e6
+    else if (t >= 1e3) printf "%.0fk", t / 1e3
+    else               printf "%d",    t
+}')
+
 # ---- emit HTML ----
 cat > "$OUT" <<'HEAD_EOF'
 <!DOCTYPE html>
@@ -615,7 +625,7 @@ cat >> "$OUT" <<HEADER_EOF
 
 <div class="panel">
     <h2>Caveman mode &middot; output tokens per assistant message</h2>
-    <div class="sub" style="margin: -8px 0 8px; color: var(--fg-dim); font-size: 12px;">measured from session JSONLs (caveman-on vs caveman-off main sessions) &middot; task mix differs between cohorts &middot; the plugin's own &quot;saved&quot; figure is a fixed-ratio estimate and is not used here</div>
+    <div class="sub" style="margin: -8px 0 8px; color: var(--fg-dim); font-size: 12px;">measured from session JSONLs (caveman-on vs caveman-off main sessions) &middot; task mix differs between cohorts &middot; plugin's own lifetime estimate: ~${CAVEMAN_EST_FMT} tokens &quot;saved&quot; (fixed-ratio assumption, not measured — not charted)</div>
     <div id="chart-caveman" class="chart chart-tall"></div>
 </div>
 

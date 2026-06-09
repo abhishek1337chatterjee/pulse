@@ -400,7 +400,7 @@ SELECT date, model, input_tokens, output_tokens,
                 <tr><td class="col">last_ts</td><td class="type">TIMESTAMP</td><td class="note">UTC, from the source's epoch-ms <code>ts</code>; latest line wins (the plugin double-logs)</td></tr>
                 <tr><td class="col">mode</td><td class="type">VARCHAR</td><td class="note"><code>full</code> / <code>lite</code> / <code>ultra</code> / … — cohort queries exclude <code>'off'</code></td></tr>
                 <tr><td class="col">model / output_tokens</td><td class="type">VARCHAR / BIGINT</td><td class="note">As reported by the plugin</td></tr>
-                <tr><td class="col">est_saved_tokens</td><td class="type">BIGINT</td><td class="note"><strong>Plugin's own estimate</strong> (output × fixed benchmark ratio, no counterfactual). Reference only — the dashboard panel measures <code>conversations.total_output_tokens</code> per assistant msg across caveman-on/off cohorts instead. No USD column: the plugin's price table lags new models.</td></tr>
+                <tr><td class="col">est_saved_tokens</td><td class="type">BIGINT</td><td class="note"><strong>Plugin's own estimate</strong> (output × fixed benchmark ratio, no counterfactual). The dashboard panel measures <code>conversations.total_output_tokens</code> per assistant msg across caveman-on/off cohorts; the lifetime <code>SUM(est_saved_tokens)</code> renders only as labeled subtitle text, never as a chart. No USD column: the plugin's price table lags new models.</td></tr>
             </tbody>
         </table>
 
