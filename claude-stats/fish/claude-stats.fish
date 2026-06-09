@@ -46,9 +46,6 @@ function claude-stats --description "Local Claude Code usage analytics — opens
         case ingest-sessions
             ~/Documents/claude-stats/bin/ingest-sessions.py
 
-        case ingest-caveman
-            ~/Documents/claude-stats/bin/ingest-caveman.sh
-
         case raw
             if test -z "$rest[1]"
                 echo "claude-stats raw: needs a SQL query as argument"
@@ -80,12 +77,11 @@ function _claude_stats_help
     echo "MAINTENANCE:"
     echo "  claude-stats ingest [SINCE]               daily ccusage ingest (SINCE=YYYYMMDD, default -8d)"
     echo "  claude-stats ingest-sessions              JSONL session ingest (~/.claude/projects)"
-    echo "  claude-stats ingest-caveman               caveman plugin session log (~/.claude/.caveman-history.jsonl)"
     echo "  claude-stats raw <SQL>                    run arbitrary SQL (read+write — debug only)"
     echo
     echo "BACKGROUND:"
-    echo "  systemd 02:00 nightly (Persistent)  →  ingest-daily + ingest-sessions + ingest-caveman + cleanup-old (365-day retention)"
-    echo "  claude-clean hook  →  ingest-sessions + ingest-caveman run BEFORE deletion/sweep"
+    echo "  systemd 02:00 nightly (Persistent)  →  ingest-daily + ingest-sessions + cleanup-old (365-day retention)"
+    echo "  claude-clean hook  →  ingest-sessions runs BEFORE per-project deletion"
     echo "  DB: ~/Documents/claude-stats/claude.duckdb  (survives claude-clean)"
     echo
     echo "DOCS:"

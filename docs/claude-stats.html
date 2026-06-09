@@ -72,17 +72,6 @@
                 </div>
             </div>
             <div class="cmd-row">
-                <div class="cmd">claude-stats ingest-caveman <span class="badge subtle">v6</span></div>
-                <div class="desc">
-                    Manual <code>ingest-caveman.sh</code> trigger. Reads the caveman
-                    plugin's <code>~/.claude/.caveman-history.jsonl</code> into
-                    <code>caveman_sessions</code> (dedups the plugin's double-logged
-                    lines via <code>arg_max</code> by <code>ts</code>; PK
-                    <code>session_id</code>). Also runs nightly and inside
-                    <code>claude-clean</code> before the file is swept.
-                </div>
-            </div>
-            <div class="cmd-row">
                 <div class="cmd">claude-stats raw <span class="arg">&lt;SQL&gt;</span></div>
                 <div class="desc">
                     <strong>Read+write</strong> SQL escape hatch. The only command
@@ -367,7 +356,7 @@ SELECT date, model, input_tokens, output_tokens,
                 <tr><td class="col">started_at / ended_at</td><td class="type">TIMESTAMP</td><td class="note">UTC; min/max event timestamps</td></tr>
                 <tr><td class="col">n_user_msgs / n_assistant_msgs / n_tool_calls</td><td class="type">INTEGER</td><td class="note">Counts</td></tr>
                 <tr><td class="col">max_context_tokens</td><td class="type">BIGINT</td><td class="note">Peak context size seen in any assistant turn</td></tr>
-                <tr><td class="col">total_output_tokens <span class="badge subtle">v6</span></td><td class="type">BIGINT</td><td class="note">Nullable. Sum of <code>usage.output_tokens</code> across all assistant messages. <code>NULL</code> for rows ingested before v6 whose JSONLs were already cleaned. Queries must filter <code>IS NOT NULL</code>. Drives the caveman cohort panel.</td></tr>
+                <tr><td class="col">total_output_tokens <span class="badge subtle">v6</span></td><td class="type">BIGINT</td><td class="note">Nullable. Sum of <code>usage.output_tokens</code> across all assistant messages. <code>NULL</code> for rows ingested before v6 whose JSONLs were already cleaned. Queries must filter <code>IS NOT NULL</code>.</td></tr>
                 <tr><td class="col">model</td><td class="type">VARCHAR</td><td class="note">Model in use at the peak-context turn</td></tr>
                 <tr><td class="col">summary</td><td class="type">VARCHAR</td><td class="note">First <code>type=summary</code> event, capped at 500 chars</td></tr>
                 <tr><td class="col">agent_type <span class="badge subtle">v5</span></td><td class="type">VARCHAR</td><td class="note">Nullable. For <code>kind='subagent'</code>: the subagent_type from the parent's <code>Agent</code> tool_use (e.g. <code>general-purpose</code>, <code>commit-writer</code>). <code>NULL</code> for main sessions and for subagents whose parent JSONL is missing at ingest time. Queries must filter <code>WHERE kind='subagent' AND agent_type IS NOT NULL</code>.</td></tr>
@@ -389,18 +378,6 @@ SELECT date, model, input_tokens, output_tokens,
             <tbody>
                 <tr><td class="col">session_id, skill_name</td><td class="type">VARCHAR</td><td class="note">Composite PK. <code>skill_name</code> is <code>&lt;plugin&gt;:&lt;name&gt;</code> or bare <code>&lt;name&gt;</code></td></tr>
                 <tr><td class="col">call_count</td><td class="type">INTEGER</td><td class="note">Total invocations of that skill in that session</td></tr>
-            </tbody>
-        </table>
-
-        <h3>caveman_sessions <span class="badge subtle">v6</span></h3>
-        <table class="schema">
-            <thead><tr><th>column</th><th>type</th><th>notes</th></tr></thead>
-            <tbody>
-                <tr><td class="col">session_id</td><td class="type">VARCHAR</td><td class="note">PK. Presence = caveman mode was active in that session. Joins <code>conversations.session_id</code>.</td></tr>
-                <tr><td class="col">last_ts</td><td class="type">TIMESTAMP</td><td class="note">UTC, from the source's epoch-ms <code>ts</code>; latest line wins (the plugin double-logs)</td></tr>
-                <tr><td class="col">mode</td><td class="type">VARCHAR</td><td class="note"><code>full</code> / <code>lite</code> / <code>ultra</code> / … — cohort queries exclude <code>'off'</code></td></tr>
-                <tr><td class="col">model / output_tokens</td><td class="type">VARCHAR / BIGINT</td><td class="note">As reported by the plugin</td></tr>
-                <tr><td class="col">est_saved_tokens</td><td class="type">BIGINT</td><td class="note"><strong>Plugin's own estimate</strong> (output × fixed benchmark ratio, no counterfactual). The dashboard panel measures <code>conversations.total_output_tokens</code> per assistant msg across caveman-on/off cohorts; the lifetime <code>SUM(est_saved_tokens)</code> renders only as labeled subtitle text, never as a chart. No USD column: the plugin's price table lags new models.</td></tr>
             </tbody>
         </table>
 
