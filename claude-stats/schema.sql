@@ -82,3 +82,28 @@ CREATE TABLE IF NOT EXISTS project_daily_usage (
 
 CREATE INDEX IF NOT EXISTS idx_project_daily_usage_date         ON project_daily_usage(date);
 CREATE INDEX IF NOT EXISTS idx_project_daily_usage_project_path ON project_daily_usage(project_path);
+
+-- v6: real output-token total per session, summed from usage.output_tokens
+-- across all assistant messages in the JSONL. NULL for rows ingested before
+-- v6 whose JSONLs were already cleaned — queries must filter IS NOT NULL.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS total_output_tokens BIGINT;
+
+-- v6: caveman plugin session log, from ~/.claude/.caveman-history.jsonl.
+-- One row per session (the source appends duplicates; ingest keeps the
+-- latest by ts). Presence of a session_id here = caveman mode was active.
+-- est_saved_tokens is the PLUGIN'S OWN ESTIMATE (output × fixed benchmark
+-- ratio, no counterfactual) — kept for reference, never presented as a
+-- measured number. The measured comparison joins this table against
+-- conversations.total_output_tokens instead. No USD column on purpose:
+-- the plugin's price table lags new models and reports $0.
+CREATE TABLE IF NOT EXISTS caveman_sessions (
+    session_id VARCHAR PRIMARY KEY,
+    last_ts TIMESTAMP,                        -- naive UTC, from epoch-ms ts
+    mode VARCHAR,
+    model VARCHAR,
+    output_tokens BIGINT NOT NULL DEFAULT 0,
+    est_saved_tokens BIGINT NOT NULL DEFAULT 0,
+    ingested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_caveman_sessions_ts ON caveman_sessions(last_ts);

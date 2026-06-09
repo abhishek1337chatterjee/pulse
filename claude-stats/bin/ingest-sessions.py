@@ -67,6 +67,7 @@ def parse_jsonl(path: Path):
     kind, project_path, parent_sid = classify_path(path)
     started_at = ended_at = cwd = git_branch = summary = None
     n_user = n_assistant = n_tool_calls = 0
+    total_output = 0
     max_ctx = 0
     max_ctx_model = ""
     tools: Counter = Counter()
@@ -123,6 +124,7 @@ def parse_jsonl(path: Path):
                     model = msg.get("model") or ""
                     usage = msg.get("usage") or {}
                     if usage:
+                        total_output += usage.get("output_tokens") or 0
                         ctx = (
                             (usage.get("input_tokens") or 0)
                             + (usage.get("cache_creation_input_tokens") or 0)
@@ -167,6 +169,7 @@ def parse_jsonl(path: Path):
         "n_assistant_msgs": n_assistant,
         "n_tool_calls": n_tool_calls,
         "max_context_tokens": max_ctx,
+        "total_output_tokens": total_output,
         "model": max_ctx_model,
         "summary": (summary or "")[:500],
         "agent_type": "",  # backfilled for subagents in main()
@@ -192,16 +195,17 @@ SELECT * FROM read_csv('{tmpdir}/conversations.csv',
     'started_at': 'TIMESTAMP', 'ended_at': 'TIMESTAMP',
     'n_user_msgs': 'INTEGER', 'n_assistant_msgs': 'INTEGER',
     'n_tool_calls': 'INTEGER', 'max_context_tokens': 'BIGINT',
+    'total_output_tokens': 'BIGINT',
     'model': 'VARCHAR', 'summary': 'VARCHAR', 'agent_type': 'VARCHAR'
   }});
 
 INSERT OR REPLACE INTO conversations
   (session_id, project_path, cwd, git_branch, kind, parent_session_id,
    started_at, ended_at, n_user_msgs, n_assistant_msgs, n_tool_calls,
-   max_context_tokens, model, summary, agent_type, ingested_at)
+   max_context_tokens, total_output_tokens, model, summary, agent_type, ingested_at)
 SELECT session_id, project_path, cwd, git_branch, kind, parent_session_id,
        started_at, ended_at, n_user_msgs, n_assistant_msgs, n_tool_calls,
-       max_context_tokens, model, summary,
+       max_context_tokens, total_output_tokens, model, summary,
        NULLIF(agent_type, '') AS agent_type, CURRENT_TIMESTAMP
 FROM staging_conv;
 
@@ -280,7 +284,7 @@ def main():
             conv_rows,
             ["session_id", "project_path", "cwd", "git_branch", "kind", "parent_session_id",
              "started_at", "ended_at", "n_user_msgs", "n_assistant_msgs", "n_tool_calls",
-             "max_context_tokens", "model", "summary", "agent_type"],
+             "max_context_tokens", "total_output_tokens", "model", "summary", "agent_type"],
             tmpdir / "conversations.csv",
         )
         write_csv(tool_rows, ["session_id", "tool_name", "call_count"], tmpdir / "tools.csv")

@@ -1,5 +1,5 @@
 [Unit]
-Description=claude-stats: nightly ingest (ccusage daily + sessions + cleanup)
+Description=claude-stats: nightly ingest (ccusage daily + sessions + caveman + cleanup)
 
 [Service]
 Type=oneshot
@@ -16,6 +16,9 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # + cleanup steps (that masking was the original silent-failure bug).
 ExecStart=-/usr/bin/bash -c '. %h/.nvm/nvm.sh >/dev/null 2>&1; exec %h/Documents/claude-stats/bin/ingest-daily.sh'
 ExecStart=/usr/bin/bash -c '. %h/.nvm/nvm.sh >/dev/null 2>&1; exec %h/Documents/claude-stats/bin/ingest-sessions.py'
+# caveman history is tiny + local-only; '-' prefix keeps a malformed line or a
+# plugin format change from blocking the retention cleanup that follows.
+ExecStart=-/usr/bin/bash -c '. %h/.nvm/nvm.sh >/dev/null 2>&1; exec %h/Documents/claude-stats/bin/ingest-caveman.sh'
 ExecStart=/usr/bin/bash -c '. %h/.nvm/nvm.sh >/dev/null 2>&1; exec %h/Documents/claude-stats/bin/cleanup-old.sh'
 Nice=15
 IOSchedulingClass=idle

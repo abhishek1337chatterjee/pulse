@@ -297,6 +297,33 @@ CONTEXT_DIST=$(q "
     ORDER BY MIN(ctx * 100.0 / window_size);
 ")
 
+# caveman cohort comparison — MEASURED output tokens per assistant message,
+# caveman-on vs caveman-off main sessions, per model. A session counts as
+# caveman when it appears in caveman_sessions with mode != 'off' (presence =
+# the plugin's hooks logged it). Uses conversations.total_output_tokens (v6,
+# summed from real usage.output_tokens) — NOT the plugin's est_saved_tokens,
+# which is a fixed-ratio estimate with no counterfactual.
+CAVEMAN_COMPARE=$(q "
+    SELECT
+        COALESCE(NULLIF(c.model, ''), 'unknown') AS model,
+        (cv.session_id IS NOT NULL)              AS caveman,
+        COUNT(*)                                 AS sessions,
+        SUM(c.total_output_tokens)               AS output_tokens,
+        SUM(c.n_assistant_msgs)                  AS assistant_msgs,
+        ROUND(SUM(c.total_output_tokens) * 1.0
+              / NULLIF(SUM(c.n_assistant_msgs), 0), 0) AS out_per_msg
+    FROM conversations c
+    LEFT JOIN caveman_sessions cv
+           ON c.session_id = cv.session_id AND cv.mode IS DISTINCT FROM 'off'
+    WHERE c.kind = 'main'
+      AND c.total_output_tokens IS NOT NULL
+      AND c.total_output_tokens > 0
+      AND c.n_assistant_msgs > 0
+      AND $WHERE_CSTARTED
+    GROUP BY 1, 2
+    ORDER BY 1, 2;
+")
+
 # recent main sessions
 SESSIONS=$(q "
     SELECT
@@ -587,6 +614,12 @@ cat >> "$OUT" <<HEADER_EOF
 </div>
 
 <div class="panel">
+    <h2>Caveman mode &middot; output tokens per assistant message</h2>
+    <div class="sub" style="margin: -8px 0 8px; color: var(--fg-dim); font-size: 12px;">measured from session JSONLs (caveman-on vs caveman-off main sessions) &middot; task mix differs between cohorts &middot; the plugin's own &quot;saved&quot; figure is a fixed-ratio estimate and is not used here</div>
+    <div id="chart-caveman" class="chart chart-tall"></div>
+</div>
+
+<div class="panel">
     <h2>Recent main sessions</h2>
     <div class="scroll">
         <table id="sessions-table">
@@ -630,6 +663,7 @@ printf '    topSubagents: %s,\n' "$TOP_SUBAGENTS" >> "$OUT"
 printf '    topRepos: %s,\n'     "$TOP_REPOS"    >> "$OUT"
 printf '    attribution: %s,\n'  "$ATTRIBUTION"  >> "$OUT"
 printf '    contextDist: %s,\n'  "$CONTEXT_DIST" >> "$OUT"
+printf '    cavemanCompare: %s,\n' "$CAVEMAN_COMPARE" >> "$OUT"
 printf '    sessions: %s,\n'     "$SESSIONS"     >> "$OUT"
 
 cat >> "$OUT" <<'JS_EOF'
@@ -1091,6 +1125,49 @@ function renderContext() {
     }), config);
 }
 
+// ---- caveman cohort comparison (grouped bar per model) ----
+function renderCaveman() {
+    const rows = DATA.cavemanCompare || [];
+    // duckdb -json serializes the boolean as the STRING "false"/"true" here,
+    // and ("false") is truthy — compare explicitly, never rely on truthiness
+    const isOn = v => v === true || v === 'true';
+    const on  = rows.filter(r => isOn(r.caveman));
+    const off = rows.filter(r => !isOn(r.caveman));
+    if (!on.length) {
+        document.getElementById('chart-caveman').innerHTML =
+            '<div class="empty">no caveman sessions in window — run claude-stats ingest-caveman</div>';
+        return;
+    }
+    // only models that appear in BOTH cohorts compare fairly; show the rest too,
+    // they just render a single bar
+    const models = [...new Set(rows.map(r => r.model))].sort();
+    const pick = (src, m) => src.find(r => r.model === m);
+    const mk = (src, name, color) => ({
+        name,
+        x: models,
+        y: models.map(m => (pick(src, m) || {}).out_per_msg ?? null),
+        type: 'bar',
+        marker: { color, line: { width: 0 } },
+        text: models.map(m => {
+            const r = pick(src, m);
+            return r ? `${r.sessions} sess` : '';
+        }),
+        textposition: 'outside',
+        textfont: { color: COLORS.fgDim, size: 10 },
+        hovertemplate: '<b>%{y}</b> out tok/msg<br>%{x} · %{text}<extra>' + name + '</extra>',
+    });
+    Plotly.newPlot('chart-caveman', [
+        mk(off, 'caveman off', COLORS.fgDim),
+        mk(on,  'caveman on',  COLORS.good),
+    ], baseLayout({
+        barmode: 'group',
+        margin: { l: 56, r: 16, t: 8, b: 64 },
+        yaxis: { gridcolor: COLORS.border, zeroline: false, color: COLORS.fgDim,
+                 title: { text: 'output tokens / assistant msg', font: { size: 10, color: COLORS.fgDim } } },
+        xaxis: { gridcolor: 'transparent', zeroline: false, color: COLORS.fgDim, tickfont: { size: 10 } },
+    }), config);
+}
+
 // ---- sessions table ----
 function renderSessions() {
     const tbody = document.querySelector('#sessions-table tbody');
@@ -1123,6 +1200,7 @@ renderSubagents();
 renderModels();
 renderRepos();
 renderContext();
+renderCaveman();
 renderSessions();
 </script>
 </body>

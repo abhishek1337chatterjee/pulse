@@ -143,16 +143,18 @@ aren't tracked in git.
 | File | Role |
 |---|---|
 | `claude-stats/bin/ingest-daily.sh` | runs `npx ccusage claude daily --json` twice (plain + `--instances --breakdown`), upserts into `daily_usage` (PK: `date,model`) and `project_daily_usage` (PK: `project_path,date,model`). Both share an 8-day rolling-rewrite window so older rows are immutable; `project_daily_usage` rolled up sums to `daily_usage` to the cent. The `claude` subcommand is required under ccusage v19+; top-level `ccusage daily` now aggregates all agents and drops `modelBreakdowns`. |
-| `claude-stats/bin/ingest-sessions.py` | walks `~/.claude/projects/**/*.jsonl`, parses tool-use events + usage, writes `conversations`, `conversation_tool_usage`, `conversation_skill_usage`. Per-project cost lives in `project_daily_usage` (written by `ingest-daily.sh`); this script no longer touches cost. |
-| `claude-stats/bin/cleanup-old.sh` | 365-day retention across all five data tables |
+| `claude-stats/bin/ingest-sessions.py` | walks `~/.claude/projects/**/*.jsonl`, parses tool-use events + usage (incl. per-session `total_output_tokens`, v6), writes `conversations`, `conversation_tool_usage`, `conversation_skill_usage`. Per-project cost lives in `project_daily_usage` (written by `ingest-daily.sh`); this script no longer touches cost. |
+| `claude-stats/bin/ingest-caveman.sh` | reads the caveman plugin's `~/.claude/.caveman-history.jsonl` into `caveman_sessions` (PK `session_id`, dedups the plugin's double-logged lines via `arg_max` by `ts`). Stores the plugin's `est_saved_tokens` for reference only — the dashboard's caveman panel measures real `total_output_tokens` per assistant message, caveman-on vs caveman-off cohorts, and ignores the estimate. `est_saved_usd` is dropped (the plugin's price table lags new models). |
+| `claude-stats/bin/cleanup-old.sh` | 365-day retention across all six data tables |
 | `claude-stats/bin/build-dashboard.sh` | emits self-contained `/tmp/claude-stats-dashboard.html` (Plotly via CDN, AMOLED theme) |
-| `claude-stats/fish/claude-stats.fish` | CLI wrapper: `dashboard` (interactive HTML), `ingest`, `ingest-sessions`, `raw <SQL>` (debug-only escape hatch) |
+| `claude-stats/fish/claude-stats.fish` | CLI wrapper: `dashboard` (interactive HTML), `ingest`, `ingest-sessions`, `ingest-caveman`, `raw <SQL>` (debug-only escape hatch) |
 
 Schedule: **systemd user timer** `claude-stats-ingest.timer` runs nightly
 at 02:00 (with `Persistent=true`, so missed runs from off/asleep nights
-fire on next boot) — chains ingest-daily → ingest-sessions → cleanup-old.
-Also: `claude-clean` runs ingest-sessions *before* per-project deletion to
-capture conversation metadata before the JSONLs are deleted.
+fire on next boot) — chains ingest-daily → ingest-sessions → ingest-caveman
+→ cleanup-old. Also: `claude-clean` runs ingest-sessions *before*
+per-project deletion and ingest-caveman *before* its ephemeral sweep, so
+both datasets are captured before their source files are deleted.
 
 ### battery-stats
 

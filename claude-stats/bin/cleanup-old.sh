@@ -21,10 +21,15 @@ WHERE session_id NOT IN (SELECT session_id FROM conversations);
 DELETE FROM conversation_skill_usage
 WHERE session_id NOT IN (SELECT session_id FROM conversations);
 
+DELETE FROM caveman_sessions
+WHERE last_ts IS NOT NULL
+  AND CAST(last_ts AS DATE) < (CURRENT_DATE - INTERVAL 365 DAY);
+
 SELECT
   '[cleanup] daily_usage=' || (SELECT COUNT(*) FROM daily_usage)
   || ' project_daily=' || (SELECT COUNT(*) FROM project_daily_usage)
   || ' conversations=' || (SELECT COUNT(*) FROM conversations)
   || ' tool_rows=' || (SELECT COUNT(*) FROM conversation_tool_usage)
-  || ' skill_rows=' || (SELECT COUNT(*) FROM conversation_skill_usage) AS msg;
+  || ' skill_rows=' || (SELECT COUNT(*) FROM conversation_skill_usage)
+  || ' caveman=' || (SELECT COUNT(*) FROM caveman_sessions) AS msg;
 SQL
