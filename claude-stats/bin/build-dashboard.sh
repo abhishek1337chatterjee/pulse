@@ -80,7 +80,9 @@ STATS=$(q "
         SELECT
             COUNT(*) FILTER (WHERE kind = 'main')     AS n_main,
             COUNT(*) FILTER (WHERE kind = 'subagent') AS n_subagent,
-            SUM(n_tool_calls)                         AS total_tool_calls
+            SUM(n_tool_calls)                         AS total_tool_calls,
+            SUM(active_seconds) FILTER (WHERE kind = 'main')                          AS active_secs,
+            COUNT(*) FILTER (WHERE kind = 'main' AND active_seconds IS NOT NULL)      AS n_main_active
         FROM conversations
         WHERE $WHERE_STARTED
     )
@@ -96,6 +98,8 @@ STATS=$(q "
         (SELECT n_main FROM convo)                                             AS n_main_sessions,
         (SELECT n_subagent FROM convo)                                         AS n_subagents,
         (SELECT total_tool_calls FROM convo)                                   AS total_tool_calls,
+        (SELECT active_secs FROM convo)                                        AS active_secs,
+        (SELECT n_main_active FROM convo)                                      AS n_main_active,
         ROUND(SUM(cost) / NULLIF(COUNT(DISTINCT date), 0), 2)                  AS avg_cost_per_day
     FROM win;
 ")
@@ -297,6 +301,20 @@ CONTEXT_DIST=$(q "
     ORDER BY MIN(ctx * 100.0 / window_size);
 ")
 
+# v7: daily active-time (hands-on hours) — capped active_seconds per main session,
+# attributed to the IST day the session started, summed per day within the window.
+DAILY_TIME=$(q "
+    SELECT
+        STRFTIME((started_at AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata', '%Y-%m-%d') AS date,
+        ROUND(SUM(active_seconds) / 3600.0, 2) AS hours,
+        SUM(active_seconds)                    AS secs,
+        COUNT(*)                               AS sessions
+    FROM conversations
+    WHERE kind = 'main' AND active_seconds IS NOT NULL AND $WHERE_STARTED
+    GROUP BY 1
+    ORDER BY 1;
+")
+
 # recent main sessions
 SESSIONS=$(q "
     SELECT
@@ -306,6 +324,7 @@ SESSIONS=$(q "
         n_user_msgs,
         n_assistant_msgs,
         n_tool_calls,
+        active_seconds AS active_secs,
         ROUND(max_context_tokens / 1000.0, 1) AS max_ctx_k,
         model,
         CASE WHEN length(summary) > 80 THEN substr(summary, 1, 77) || '...' ELSE summary END AS summary
@@ -489,6 +508,7 @@ tr:hover td { background: var(--panel-2); }
 .scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
 .scroll::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
 .empty { padding: 40px; text-align: center; color: var(--fg-dim); font-size: 13px; }
+h2 .subtle { color: var(--fg-dim); font-weight: 400; font-size: 12px; letter-spacing: 0; }
 .tag {
     display: inline-block;
     padding: 2px 8px;
@@ -535,6 +555,11 @@ cat >> "$OUT" <<HEADER_EOF
 </div>
 
 <div class="cards" id="cards"></div>
+
+<div class="panel">
+    <h2>Time spent &mdash; active hours per day <span class="subtle">(hands-on, 15&#8209;min idle cap)</span></h2>
+    <div id="chart-daily-time" class="chart chart-tall"></div>
+</div>
 
 <div class="panel">
     <h2>Daily cost (USD) by model</h2>
@@ -597,6 +622,7 @@ cat >> "$OUT" <<HEADER_EOF
                     <th>branch</th>
                     <th>u/a msgs</th>
                     <th>tools</th>
+                    <th>active</th>
                     <th>peak ctx</th>
                     <th>model</th>
                     <th>summary</th>
@@ -620,6 +646,7 @@ const DATA = {
 JS_PRELUDE
 
 printf '    stats: %s,\n'        "$STATS"        >> "$OUT"
+printf '    dailyTime: %s,\n'    "$DAILY_TIME"   >> "$OUT"
 printf '    dailyCost: %s,\n'    "$DAILY_COST"   >> "$OUT"
 printf '    dailyTokens: %s,\n'  "$DAILY_TOKENS" >> "$OUT"
 printf '    byModel: %s,\n'      "$BY_MODEL"     >> "$OUT"
@@ -730,6 +757,17 @@ function fmtNum(n) {
     return n.toString();
 }
 
+// seconds -> "Xh YYm" / "Ym" / "<1m" — same shape as the statusline clock.
+function fmtDur(secs) {
+    if (secs == null) return '—';
+    const s = Math.round(secs);
+    const h = Math.floor(s / 3600);
+    const m = Math.round((s % 3600) / 60);
+    if (h > 0) return h + 'h ' + String(m).padStart(2, '0') + 'm';
+    if (m > 0) return m + 'm';
+    return '<1m';
+}
+
 const baseLayout = (extra = {}) => ({
     paper_bgcolor: COLORS.panel,
     plot_bgcolor: COLORS.panel,
@@ -774,6 +812,8 @@ function renderCards() {
         { label: 'Active days', value: s.active_days ?? 0,
           unit: '/ ' + (s.window_days ?? 0),
           meta: s.window_days ? Math.round((s.active_days || 0) / s.window_days * 100) + '% activity' : '' },
+        { label: 'Active time', value: fmtDur(s.active_secs), cls: 'good',
+          meta: (s.n_main_active ?? 0) + ' of ' + (s.n_main_sessions ?? 0) + ' sessions measured' },
         { label: 'Total tokens', value: fmtNum(s.total_tokens), cls: 'cyan',
           meta: 'input + output + cache' },
         { label: 'Cache hit rate', value: (s.cache_hit_pct ?? '—'), unit: '%',
@@ -791,6 +831,29 @@ function renderCards() {
             ${c.meta ? `<div class="meta">${c.meta}</div>` : ''}
         </div>
     `).join('');
+}
+
+// ---- daily active-time bar (hands-on hours per day) ----
+function renderDailyTime() {
+    const el = document.getElementById('chart-daily-time');
+    if (!DATA.dailyTime || !DATA.dailyTime.length) {
+        el.innerHTML = '<div class="empty">no active-time data in window — run <code>claude-stats ingest-sessions</code></div>';
+        return;
+    }
+    const rows = DATA.dailyTime;
+    const trace = {
+        type: 'bar',
+        x: rows.map(r => r.date),
+        y: rows.map(r => r.hours),
+        marker: { color: COLORS.primary, line: { width: 0 } },
+        customdata: rows.map(r => [fmtDur(r.secs), r.sessions]),
+        hovertemplate: '<b>%{x}</b><br>%{customdata[0]} active · %{customdata[1]} session(s)<extra></extra>',
+    };
+    Plotly.newPlot('chart-daily-time', [trace], baseLayout({
+        yaxis: { title: { text: 'active hours', font: { size: 10 } },
+                 gridcolor: COLORS.border, zeroline: false, color: COLORS.fgDim, tickfont: { size: 10 } },
+        hovermode: 'closest',
+    }), config);
 }
 
 // ---- daily cost stacked bar (one trace per model) ----
@@ -1095,7 +1158,7 @@ function renderContext() {
 function renderSessions() {
     const tbody = document.querySelector('#sessions-table tbody');
     if (!DATA.sessions.length) {
-        tbody.innerHTML = '<tr><td colspan="8" class="empty">no sessions yet — run claude-stats ingest-sessions</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="empty">no sessions yet — run claude-stats ingest-sessions</td></tr>';
         return;
     }
     const esc = (s) => (s == null ? '' : String(s).replace(/[<>&]/g, c => ({ '<':'&lt;', '>':'&gt;', '&':'&amp;' }[c])));
@@ -1106,6 +1169,7 @@ function renderSessions() {
             <td class="dim">${esc(s.git_branch) || '—'}</td>
             <td class="num">${s.n_user_msgs ?? 0}/${s.n_assistant_msgs ?? 0}</td>
             <td class="num">${s.n_tool_calls ?? 0}</td>
+            <td class="num">${s.active_secs != null ? fmtDur(s.active_secs) : '<span class="dim">—</span>'}</td>
             <td class="num">${s.max_ctx_k != null ? s.max_ctx_k + 'k' : '—'}</td>
             <td>${tagForModel(s.model)}</td>
             <td class="dim">${esc(s.summary) || '—'}</td>
@@ -1114,6 +1178,7 @@ function renderSessions() {
 }
 
 renderCards();
+renderDailyTime();
 renderDailyCost();
 renderTokens();
 renderCache();

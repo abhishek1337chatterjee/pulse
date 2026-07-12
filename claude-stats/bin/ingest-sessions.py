@@ -20,12 +20,28 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 HOME = Path.home()
 PROJECTS = HOME / ".claude" / "projects"
 DB = HOME / "Documents" / "claude-stats" / "claude.duckdb"
 DUCKDB = HOME / ".local" / "bin" / "duckdb"
+
+# v7: idle cutoff for capped active-time. A gap between two consecutive message
+# timestamps longer than this means the user stepped away, so only this many
+# seconds of it count as active work. 900s = 15min (WakaTime's heartbeat model).
+IDLE_CAP_SECONDS = 900
+
+
+def _parse_ts(s):
+    """Parse an ISO-8601 message timestamp to datetime, or None."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
 
 # Subagent dispatch leaves "agentId: <hex>" in the parent's tool_result text.
 # That hex id matches the subagent JSONL filename (agent-<id>.jsonl), so we can
@@ -66,6 +82,7 @@ def parse_jsonl(path: Path):
     session_id = path.stem
     kind, project_path, parent_sid = classify_path(path)
     started_at = ended_at = cwd = git_branch = summary = None
+    timestamps: list = []  # v7: parsed msg timestamps, for capped active-time
     n_user = n_assistant = n_tool_calls = 0
     total_output = 0
     max_ctx = 0
@@ -92,6 +109,9 @@ def parse_jsonl(path: Path):
                         started_at = ts
                     if ended_at is None or ts > ended_at:
                         ended_at = ts
+                    dt = _parse_ts(ts)
+                    if dt is not None:
+                        timestamps.append(dt)
                 if cwd is None and "cwd" in d:
                     cwd = d["cwd"]
                 if git_branch is None and "gitBranch" in d:
@@ -156,6 +176,16 @@ def parse_jsonl(path: Path):
     if n_user == 0 and n_assistant == 0:
         return None
 
+    # v7: capped active-time. Sort timestamps, sum gaps, cap each at the idle
+    # cutoff so idle stretches (a session resumed hours/days later) don't inflate.
+    active_seconds = 0.0
+    if len(timestamps) >= 2:
+        timestamps.sort()
+        for a, b in zip(timestamps, timestamps[1:]):
+            gap = (b - a).total_seconds()
+            if gap > 0:
+                active_seconds += min(gap, IDLE_CAP_SECONDS)
+
     conv = {
         "session_id": session_id,
         "project_path": project_path,
@@ -170,6 +200,7 @@ def parse_jsonl(path: Path):
         "n_tool_calls": n_tool_calls,
         "max_context_tokens": max_ctx,
         "total_output_tokens": total_output,
+        "active_seconds": int(round(active_seconds)),
         "model": max_ctx_model,
         "summary": (summary or "")[:500],
         "agent_type": "",  # backfilled for subagents in main()
@@ -195,17 +226,17 @@ SELECT * FROM read_csv('{tmpdir}/conversations.csv',
     'started_at': 'TIMESTAMP', 'ended_at': 'TIMESTAMP',
     'n_user_msgs': 'INTEGER', 'n_assistant_msgs': 'INTEGER',
     'n_tool_calls': 'INTEGER', 'max_context_tokens': 'BIGINT',
-    'total_output_tokens': 'BIGINT',
+    'total_output_tokens': 'BIGINT', 'active_seconds': 'BIGINT',
     'model': 'VARCHAR', 'summary': 'VARCHAR', 'agent_type': 'VARCHAR'
   }});
 
 INSERT OR REPLACE INTO conversations
   (session_id, project_path, cwd, git_branch, kind, parent_session_id,
    started_at, ended_at, n_user_msgs, n_assistant_msgs, n_tool_calls,
-   max_context_tokens, total_output_tokens, model, summary, agent_type, ingested_at)
+   max_context_tokens, total_output_tokens, active_seconds, model, summary, agent_type, ingested_at)
 SELECT session_id, project_path, cwd, git_branch, kind, parent_session_id,
        started_at, ended_at, n_user_msgs, n_assistant_msgs, n_tool_calls,
-       max_context_tokens, total_output_tokens, model, summary,
+       max_context_tokens, total_output_tokens, active_seconds, model, summary,
        NULLIF(agent_type, '') AS agent_type, CURRENT_TIMESTAMP
 FROM staging_conv;
 
@@ -284,7 +315,7 @@ def main():
             conv_rows,
             ["session_id", "project_path", "cwd", "git_branch", "kind", "parent_session_id",
              "started_at", "ended_at", "n_user_msgs", "n_assistant_msgs", "n_tool_calls",
-             "max_context_tokens", "total_output_tokens", "model", "summary", "agent_type"],
+             "max_context_tokens", "total_output_tokens", "active_seconds", "model", "summary", "agent_type"],
             tmpdir / "conversations.csv",
         )
         write_csv(tool_rows, ["session_id", "tool_name", "call_count"], tmpdir / "tools.csv")

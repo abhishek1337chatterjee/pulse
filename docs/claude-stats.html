@@ -203,6 +203,7 @@ SELECT date, model, input_tokens, output_tokens,
         </p>
         <ul class="tight">
             <li><code>started_at</code> / <code>ended_at</code> = min/max <code>timestamp</code> across lines</li>
+            <li><code>active_seconds</code> <span class="badge subtle">v7</span> = capped active-time. Every message <code>timestamp</code> is collected, sorted, and consecutive gaps summed with each gap capped at <code>IDLE_CAP_SECONDS</code> (900s = 15&nbsp;min). This is <em>hands-on</em> time — deliberately NOT <code>ended_at − started_at</code>, whose raw span over-counts because a resumed session appends to the same <code>session_id</code> across days (one real session spanned 622h of wall-span, far less active).</li>
             <li><code>cwd</code> / <code>gitBranch</code> = first non-null occurrence (sticky)</li>
             <li><code>type=user</code> → increment <code>n_user_msgs</code>; for main sessions, scan <code>tool_result</code> blocks for <code>"agentId: &lt;hex&gt;"</code> and pair the hex back to the subagent_type from the matching <code>Agent</code> tool_use (see "Subagent name attribution" below)</li>
             <li><code>type=assistant</code> → increment <code>n_assistant_msgs</code>; track peak context (<code>input + cache_create + cache_read</code>); count tool-use blocks in <code>content[]</code>; for blocks with <code>name=Skill</code>, also count <code>input.skill</code> into a per-session skill tally; for <code>name=Agent</code> (subagent dispatch), record <code>(tool_use_id → input.subagent_type)</code> for the agentId lookup above</li>
@@ -264,9 +265,10 @@ SELECT date, model, input_tokens, output_tokens,
             <div class="box good"><div class="label">4. open</div>xdg-open<br><span style="color:var(--fg-muted)">Plotly renders</span></div>
         </div>
 
-        <h3>The 12 queries embedded as <code>DATA</code></h3>
+        <h3>The 13 queries embedded as <code>DATA</code></h3>
         <div class="cmd-table">
-            <div class="cmd-row"><div class="cmd">stats</div><div class="desc">6 KPI numbers (total cost, active days, total tokens, cache hit %, main sessions, tool calls).</div></div>
+            <div class="cmd-row"><div class="cmd">stats</div><div class="desc">KPI numbers (total cost, active days, <strong>active time</strong> <span class="badge subtle">v7</span>, total tokens, cache hit %, main sessions, tool calls).</div></div>
+            <div class="cmd-row"><div class="cmd">dailyTime <span class="badge subtle">v7</span></div><div class="desc">Per IST date: <code>SUM(active_seconds)/3600</code> over main sessions (<code>active_seconds IS NOT NULL</code>) started that day — feeds the "Time spent" active-hours bar chart.</div></div>
             <div class="cmd-row"><div class="cmd">dailyCost</div><div class="desc">Per (date × model) for the window — feeds the stacked-bar chart.</div></div>
             <div class="cmd-row"><div class="cmd">dailyTokens</div><div class="desc">Per date: input / output / cache_create / cache_read — feeds the token mix stacked bar.</div></div>
             <div class="cmd-row"><div class="cmd">byModel</div><div class="desc">Cost per model over the window — feeds the donut.</div></div>
@@ -353,10 +355,11 @@ SELECT date, model, input_tokens, output_tokens,
                 <tr><td class="col">git_branch</td><td class="type">VARCHAR</td><td class="note">First-seen branch</td></tr>
                 <tr><td class="col">kind</td><td class="type">VARCHAR</td><td class="note"><code>'main'</code> or <code>'subagent'</code></td></tr>
                 <tr><td class="col">parent_session_id</td><td class="type">VARCHAR</td><td class="note">NULL for main; UUID for subagent</td></tr>
-                <tr><td class="col">started_at / ended_at</td><td class="type">TIMESTAMP</td><td class="note">UTC; min/max event timestamps</td></tr>
+                <tr><td class="col">started_at / ended_at</td><td class="type">TIMESTAMP</td><td class="note">UTC; min/max event timestamps. Raw span (<code>ended_at − started_at</code>) is NOT hands-on time — resumed sessions inflate it to days; use <code>active_seconds</code> instead.</td></tr>
                 <tr><td class="col">n_user_msgs / n_assistant_msgs / n_tool_calls</td><td class="type">INTEGER</td><td class="note">Counts</td></tr>
                 <tr><td class="col">max_context_tokens</td><td class="type">BIGINT</td><td class="note">Peak context size seen in any assistant turn</td></tr>
                 <tr><td class="col">total_output_tokens <span class="badge subtle">v6</span></td><td class="type">BIGINT</td><td class="note">Nullable. Sum of <code>usage.output_tokens</code> across all assistant messages. <code>NULL</code> for rows ingested before v6 whose JSONLs were already cleaned. Queries must filter <code>IS NOT NULL</code>.</td></tr>
+                <tr><td class="col">active_seconds <span class="badge subtle">v7</span></td><td class="type">BIGINT</td><td class="note">Nullable. Capped active-time (hands-on seconds): Σ&nbsp;min(gap between consecutive message timestamps, 900s). Powers the "Active time" card, the "Time spent" daily chart, and the sessions-table <code>active</code> column. <code>NULL</code> when the JSONL was cleaned before v7. Queries must filter <code>IS NOT NULL</code>.</td></tr>
                 <tr><td class="col">model</td><td class="type">VARCHAR</td><td class="note">Model in use at the peak-context turn</td></tr>
                 <tr><td class="col">summary</td><td class="type">VARCHAR</td><td class="note">First <code>type=summary</code> event, capped at 500 chars</td></tr>
                 <tr><td class="col">agent_type <span class="badge subtle">v5</span></td><td class="type">VARCHAR</td><td class="note">Nullable. For <code>kind='subagent'</code>: the subagent_type from the parent's <code>Agent</code> tool_use (e.g. <code>general-purpose</code>, <code>commit-writer</code>). <code>NULL</code> for main sessions and for subagents whose parent JSONL is missing at ingest time. Queries must filter <code>WHERE kind='subagent' AND agent_type IS NOT NULL</code>.</td></tr>

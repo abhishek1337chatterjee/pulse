@@ -87,3 +87,14 @@ CREATE INDEX IF NOT EXISTS idx_project_daily_usage_project_path ON project_daily
 -- across all assistant messages in the JSONL. NULL for rows ingested before
 -- v6 whose JSONLs were already cleaned — queries must filter IS NOT NULL.
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS total_output_tokens BIGINT;
+
+-- v7: capped active-time per session, in seconds. Sum of gaps between
+-- consecutive message timestamps, each gap capped at the idle cutoff
+-- (IDLE_CAP_SECONDS in ingest-sessions.py, 900s = 15min, WakaTime-style).
+-- This is HANDS-ON time, deliberately NOT (ended_at - started_at): the raw
+-- span over-counts because Claude Code appends to the same session_id when a
+-- conversation is resumed across days (a real session spanned 622h of span but
+-- far less active time). Captured at ingest because the source JSONL is later
+-- deleted by retention/claude-clean. NULL for rows ingested before v7 whose
+-- JSONL is already gone — queries must filter IS NOT NULL.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS active_seconds BIGINT;
