@@ -1,6 +1,6 @@
 #!/bin/bash
 # aggregate-daily.sh — derive discharge_sessions and daily_battery from raw samples
-# nightly cron at ~3 AM
+# runs nightly (systemd timer) AND after every poll (poll.sh, via flock)
 set -euo pipefail
 
 DB="$HOME/Documents/battery-stats/battery.duckdb"
@@ -11,13 +11,18 @@ DUCKDB="$HOME/.local/bin/duckdb"
 #   - a "discharge session" starts when state goes discharging and ends when on_ac becomes true OR last sample
 #   - SOT = sum of (sample_interval) where screen_active=true within the session
 #   - we approximate sample interval as time-to-next-sample, capped at 10 min (suspended gap detection)
+#
+# STORAGE NOTE (2026-09-11): this used to be an unconditional DELETE + INSERT rebuild.
+# DuckDB never reclaims the row group a DELETE empties, so every run (288/day once
+# poll.sh started calling this) leaked one 256 KB block per derived table — the DB file
+# reached 4.9 GB for ~15 MB of live data. Now the derivation lands in TEMP tables first and
+# the persistent tables are rewritten ONLY when the result actually differs (the DELETE /
+# INSERT carry a `WHERE changed` guard, so an unchanged run is a pure read). compact-db.sh
+# (nightly) reclaims whatever still accumulates on days with real changes.
 
 "$DUCKDB" "$DB" <<'SQL'
--- wipe and rebuild derived tables (cheap; battery_samples is small)
-DELETE FROM discharge_sessions;
-DELETE FROM daily_battery;
-
 -- step 1: tag each sample with session boundaries via on_ac transitions
+CREATE TEMP TABLE new_sessions AS
 WITH ordered AS (
     SELECT
         ts, energy_now_wh, energy_full_wh, energy_full_design_wh,
@@ -48,9 +53,8 @@ tagged AS (
     FROM boundaries
     WHERE on_ac = false  -- only battery samples belong to sessions
 )
-INSERT INTO discharge_sessions
 SELECT
-    session_id,
+    CAST(session_id AS INTEGER) AS session_id,
     MIN(ts) AS start_ts,
     MAX(ts) AS end_ts,
     CAST(SUM(interval_seconds) AS BIGINT) AS duration_seconds,
@@ -78,29 +82,25 @@ HAVING duration_seconds > 60
    AND (MAX(energy_now_wh) - MIN(energy_now_wh)) > 0.05;  -- skip phantom sessions with no real drain
 
 -- step 2: daily roll-up (group by IST date so a 23:00 IST session belongs to today, not tomorrow UTC)
-INSERT INTO daily_battery
-SELECT
-    DATE_TRUNC('day', (start_ts AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata')::DATE AS date,
-    CAST(SUM(sot_seconds) / 60 AS INTEGER) AS sot_minutes,
-    CAST(SUM(duration_seconds) / 60 AS INTEGER) AS discharge_minutes,
-    SUM(energy_used_wh) AS total_discharge_wh,
-    CASE WHEN SUM(sot_seconds) > 0
-         THEN SUM(energy_used_wh) * 3600.0 / SUM(sot_seconds)
-         ELSE NULL END AS avg_drain_w_sot,
-    COUNT(*) AS n_sessions,
-    NULL AS cycle_count_eod,        -- filled below
-    NULL AS energy_full_wh_eod,
-    NULL AS health_pct
-FROM discharge_sessions
-GROUP BY date;
-
--- backfill end-of-day cycle / energy_full from raw samples
-UPDATE daily_battery d
-SET
-    cycle_count_eod    = s.cycle_count,
-    energy_full_wh_eod = s.energy_full_wh,
-    health_pct         = s.energy_full_wh / NULLIF(s.energy_full_design_wh, 0) * 100
-FROM (
+--         + end-of-day cycle / energy_full backfill from raw samples
+CREATE TEMP TABLE new_daily AS
+WITH days AS (
+    SELECT
+        DATE_TRUNC('day', (start_ts AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata')::DATE AS date,
+        CAST(SUM(sot_seconds) / 60 AS INTEGER) AS sot_minutes,
+        CAST(SUM(duration_seconds) / 60 AS INTEGER) AS discharge_minutes,
+        -- ROUND: DuckDB's parallel SUM over doubles is order-nondeterministic in the last
+        -- ulp (38.1 vs 38.10000000000001 across runs); rounding keeps the change check
+        -- below stable so unchanged days never trigger a rewrite.
+        ROUND(SUM(energy_used_wh), 6) AS total_discharge_wh,
+        CASE WHEN SUM(sot_seconds) > 0
+             THEN ROUND(SUM(energy_used_wh) * 3600.0 / SUM(sot_seconds), 6)
+             ELSE NULL END AS avg_drain_w_sot,
+        CAST(COUNT(*) AS INTEGER) AS n_sessions
+    FROM new_sessions
+    GROUP BY date
+),
+eod AS (
     SELECT
         DATE_TRUNC('day', (ts AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata')::DATE AS date,
         FIRST(cycle_count    ORDER BY ts DESC) AS cycle_count,
@@ -108,10 +108,33 @@ FROM (
         FIRST(energy_full_design_wh ORDER BY ts DESC) AS energy_full_design_wh
     FROM battery_samples
     GROUP BY date
-) s
-WHERE d.date = s.date;
+)
+SELECT
+    d.date, d.sot_minutes, d.discharge_minutes, d.total_discharge_wh, d.avg_drain_w_sot, d.n_sessions,
+    e.cycle_count                                              AS cycle_count_eod,
+    e.energy_full_wh                                           AS energy_full_wh_eod,
+    e.energy_full_wh / NULLIF(e.energy_full_design_wh, 0) * 100 AS health_pct
+FROM days d
+LEFT JOIN eod e USING (date);
 
-SELECT 'sessions' AS what, COUNT(*) AS n FROM discharge_sessions
+-- step 3: did anything change? (symmetric difference; EXCEPT treats NULLs as equal)
+CREATE TEMP TABLE chg AS
+SELECT (
+    (SELECT COUNT(*) FROM (SELECT * FROM new_sessions EXCEPT SELECT * FROM discharge_sessions))
+  + (SELECT COUNT(*) FROM (SELECT * FROM discharge_sessions EXCEPT SELECT * FROM new_sessions))
+  + (SELECT COUNT(*) FROM (SELECT * FROM new_daily EXCEPT SELECT * FROM daily_battery))
+  + (SELECT COUNT(*) FROM (SELECT * FROM daily_battery EXCEPT SELECT * FROM new_daily))
+) > 0 AS changed;
+
+-- step 4: rewrite persistent tables only when changed (0-row DELETE/INSERT touch no storage)
+DELETE FROM discharge_sessions WHERE (SELECT changed FROM chg);
+INSERT INTO discharge_sessions SELECT * FROM new_sessions WHERE (SELECT changed FROM chg);
+DELETE FROM daily_battery      WHERE (SELECT changed FROM chg);
+INSERT INTO daily_battery      SELECT * FROM new_daily    WHERE (SELECT changed FROM chg);
+
+SELECT 'changed' AS what, CAST(changed AS BIGINT) AS n FROM chg
+UNION ALL
+SELECT 'sessions', COUNT(*) FROM discharge_sessions
 UNION ALL
 SELECT 'days', COUNT(*) FROM daily_battery;
 SQL

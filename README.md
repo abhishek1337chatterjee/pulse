@@ -160,13 +160,14 @@ capture conversation metadata before the JSONLs are deleted.
 |---|---|
 | `battery-stats/bin/poll.sh` | every 5 min: reads `/sys/class/power_supply/BAT0/*` + Wayland screen state (`loginctl IdleHint` + `gdbus org.gnome.ScreenSaver.GetActive`); writes one row to `battery_samples`; flock'd-runs the aggregator |
 | `battery-stats/bin/ingest-upower.sh` | bulk-imports UPower's `/var/lib/upower/history-{rate,charge}-{MODEL}-*.dat` (TSV: epoch, value, state) — auto-detects `MODEL` from `/sys/class/power_supply/BAT0/model_name`. Override with `BATTERY_MODEL=…` env var. |
-| `battery-stats/bin/aggregate-daily.sh` | derives `discharge_sessions` (one per AC-off→AC-on transition) and `daily_battery` (IST date rollup). SOT = sum of intervals where `screen_active=true`. |
+| `battery-stats/bin/aggregate-daily.sh` | derives `discharge_sessions` (one per AC-off→AC-on transition) and `daily_battery` (IST date rollup) into TEMP tables, then rewrites the persistent tables **only if the result changed**. SOT = sum of intervals where `screen_active=true`. |
+| `battery-stats/bin/compact-db.sh` | nightly: copies every table into a fresh DuckDB file and swaps it in (DuckDB never shrinks a file; the old unconditional rebuild leaked one dead row group per run and hit 4.9 GB). Skips below 100 MB (`BATTERY_STATS_COMPACT_MB=…`), `--force` to override. |
 | `battery-stats/bin/powertop-capture.sh` | manual `sudo -A powertop --csv ...` run; parses Top 10 Power Consumers; uses `SUDO_ASKPASS=$HOME/.local/bin/sudo-askpass` (zenity GUI prompt) |
 | `battery-stats/bin/cleanup-old.sh` | 90-day retention on raw samples (configurable: `BATTERY_STATS_RETENTION_DAYS=…`); `daily_battery` + `discharge_sessions` kept indefinitely (tiny) |
 | `battery-stats/bin/build-dashboard.sh` | emits `/tmp/battery-stats-dashboard.html` |
-| `battery-stats/fish/battery-stats.fish` | CLI wrapper: `dashboard`, `powertop` / `powertop-show`, `ingest`, `aggregate`, `poll` |
+| `battery-stats/fish/battery-stats.fish` | CLI wrapper: `dashboard`, `powertop` / `powertop-show`, `ingest`, `aggregate`, `compact`, `poll` |
 
-Schedule: **systemd user timers** — poll every 5 min, aggregate nightly 03:15.
+Schedule: **systemd user timers** — poll every 5 min; nightly 03:15 chains ingest-upower → aggregate-daily → cleanup-old → compact-db.
 
 ---
 

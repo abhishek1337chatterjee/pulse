@@ -165,7 +165,8 @@ flock -n <span class="tok-s">"$LOCK"</span> -c <span class="tok-s">"$HOME/Docume
     <section id="aggregate">
         <h2>How <code>aggregate-daily.sh</code> works <span class="badge purple">nightly + after every poll</span></h2>
         <p class="lead">
-            Wipes and rebuilds two derived tables from the raw <code>battery_samples</code>:
+            Derives two tables from the raw <code>battery_samples</code> into TEMP tables and
+            rewrites the persistent copies only when the result changed:
             <code>discharge_sessions</code> (one row per AC-off → AC-on) and
             <code>daily_battery</code> (per-day rollup in IST).
         </p>
@@ -213,6 +214,28 @@ flock -n <span class="tok-s">"$LOCK"</span> -c <span class="tok-s">"$HOME/Docume
             <code>energy_full_wh</code> from the raw samples (<code>FIRST() ORDER BY ts DESC</code>),
             and computes <code>health_pct = energy_full / energy_full_design × 100</code>.
             Tracks battery decay over time.
+        </p>
+
+        <h3>Storage: write-on-change + nightly compaction</h3>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Because <code>poll.sh</code> runs this after <em>every</em> 5-minute sample, the
+            original unconditional <code>DELETE</code> + <code>INSERT</code> rebuild leaked one
+            dead 256&nbsp;KB row group per derived table per run — DuckDB never reclaims a
+            row group emptied by DELETE and never shrinks a file (<code>VACUUM</code> is a
+            no-op for space). The file reached 4.9&nbsp;GB for ~15&nbsp;MB of live data.
+        </p>
+        <ol class="tight">
+            <li>Derive into <code>TEMP TABLE new_sessions</code> / <code>new_daily</code></li>
+            <li><code>chg.changed</code> = symmetric <code>EXCEPT</code> between new and persistent tables is non-empty</li>
+            <li><code>DELETE … WHERE (SELECT changed FROM chg)</code> / <code>INSERT … WHERE (SELECT changed FROM chg)</code> — a 0-row write touches no storage</li>
+            <li>SUM-derived doubles are <code>ROUND(x, 6)</code>: DuckDB's parallel SUM is order-nondeterministic in the last ulp and would otherwise flip <code>changed</code> every run</li>
+        </ol>
+        <p style="color:var(--fg-dim);font-size:13px;">
+            Days with real changes still leak a block each, so <code>compact-db.sh</code> runs
+            nightly after <code>cleanup-old.sh</code>: <code>ATTACH new; COPY FROM DATABASE battery TO new</code>
+            (keeps schema + indexes), verifies per-table row counts, then swaps by rename.
+            All three writers (poll insert, aggregate, compact) share
+            <code>/tmp/battery-stats-aggregate.lock</code>. Manual: <code>battery-stats compact</code>.
         </p>
     </section>
 

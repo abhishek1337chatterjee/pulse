@@ -41,7 +41,7 @@
                 <tr>
                     <td class="col">battery-stats-aggregate.timer</td>
                     <td class="type">nightly 03:15</td>
-                    <td class="note">Runs <code>ingest-upower.sh</code> + <code>aggregate-daily.sh</code> + <code>cleanup-old.sh</code></td>
+                    <td class="note">Runs <code>ingest-upower.sh</code> + <code>aggregate-daily.sh</code> + <code>cleanup-old.sh</code> + <code>compact-db.sh</code></td>
                 </tr>
                 <tr>
                     <td class="col">claude-stats-ingest.timer</td>
@@ -153,6 +153,7 @@ systemctl --user start claude-stats-ingest.service</code></pre>
 │   │   ├── aggregate-daily.sh     <span class="tok-c"># sessions + daily rollup</span>
 │   │   ├── powertop-capture.sh    <span class="tok-c"># manual snapshot</span>
 │   │   ├── cleanup-old.sh
+│   │   ├── compact-db.sh          <span class="tok-c"># nightly file compaction</span>
 │   │   └── build-dashboard.sh
 │   ├── fish/battery-stats.fish    <span class="tok-c"># CLI: dashboard, powertop, ingest</span>
 │   ├── systemd/

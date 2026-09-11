@@ -6,5 +6,6 @@ Type=oneshot
 ExecStart=%h/Documents/battery-stats/bin/ingest-upower.sh
 ExecStart=%h/Documents/battery-stats/bin/aggregate-daily.sh
 ExecStart=%h/Documents/battery-stats/bin/cleanup-old.sh
+ExecStart=%h/Documents/battery-stats/bin/compact-db.sh
 Nice=15
 IOSchedulingClass=idle

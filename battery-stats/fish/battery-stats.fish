@@ -52,6 +52,9 @@ function battery-stats --description "Local battery analytics — opens dashboar
         case aggregate
             "$bin/aggregate-daily.sh"
 
+        case compact
+            "$bin/compact-db.sh" --force
+
         case poll
             "$bin/poll.sh" && echo "ok"
 
@@ -76,11 +79,12 @@ function _battery_stats_help
     echo
     echo "MAINTENANCE:"
     echo "  battery-stats ingest                      backfill from /var/lib/upower/*.dat"
-    echo "  battery-stats aggregate                   rebuild sessions + daily rollup"
+    echo "  battery-stats aggregate                   rebuild sessions + daily rollup (writes only if changed)"
+    echo "  battery-stats compact                     rewrite battery.duckdb into a fresh file (reclaim dead blocks)"
     echo "  battery-stats poll                        take one sample now (debug)"
     echo
     echo "BACKGROUND:"
-    echo "  systemctl --user list-timers battery-stats-*    # poll every 5 min, aggregate nightly 03:15"
+    echo "  systemctl --user list-timers battery-stats-*    # poll every 5 min, aggregate+compact nightly 03:15"
     echo "  systemctl --user status battery-stats-poll      # check poller health"
     echo
     echo "DOCS:"

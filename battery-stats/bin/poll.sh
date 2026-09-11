@@ -62,7 +62,11 @@ on_ac_bool="false"
 
 ts=$(date -u +"%Y-%m-%d %H:%M:%S")
 
-"$DUCKDB" "$DB" <<SQL
+# Shared lock with aggregate-daily.sh / compact-db.sh: compaction swaps the DB file, so the
+# insert must not run concurrently with it. flock waits (up to 60s) rather than skipping.
+LOCK="/tmp/battery-stats-aggregate.lock"
+
+flock -w 60 "$LOCK" "$DUCKDB" "$DB" <<SQL
 INSERT INTO battery_samples
   (ts, energy_now_wh, energy_full_wh, energy_full_design_wh, power_now_w,
    voltage_v, capacity_pct, cycle_count, state, on_ac,
@@ -76,5 +80,5 @@ SQL
 
 # Refresh derived tables so dashboard reflects every poll.
 # Use flock so concurrent runs (e.g. manual + timer) don't collide on the DB.
-LOCK="/tmp/battery-stats-aggregate.lock"
+# aggregate-daily.sh only writes when the derived result changed (see its header).
 flock -n "$LOCK" -c "$HOME/Documents/battery-stats/bin/aggregate-daily.sh >/dev/null 2>&1" || true
