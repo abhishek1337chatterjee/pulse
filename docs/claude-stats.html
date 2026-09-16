@@ -106,6 +106,8 @@
         </p>
 
         <div class="flow">
+            <div class="box"><div class="label">sanitize</div>JSONL mirror<br><span style="color:var(--fg-muted)">jq del(.usage.iterations)</span></div>
+            <div class="arrow">→</div>
             <div class="box cyan"><div class="label">source</div>2× npx ccusage claude daily<br><span style="color:var(--fg-muted)">plain + --instances --breakdown</span></div>
             <div class="arrow">→</div>
             <div class="box"><div class="label">reshape</div>2× jq → CSV<br><span style="color:var(--fg-muted)">flatten modelBreakdowns</span></div>
@@ -114,6 +116,17 @@
             <div class="arrow">→</div>
             <div class="box good"><div class="label">targets</div>daily_usage<br>project_daily_usage</div>
         </div>
+
+        <p>
+            <strong>Sanitize step (2026-09-16).</strong> ccusage 20.0.20 silently drops any
+            assistant entry whose <code>usage.iterations[].model</code> is <code>null</code>
+            (<a href="https://github.com/ccusage/ccusage/issues/1710">ccusage#1710</a>; Claude Code
+            2.1.269 wrote that on 2026-09-12 and a day of Fable 5.1 cost vanished). The script now
+            mirrors the window's JSONL into <code>$TMPDIR/cfg/projects/</code> with
+            <code>jq 'del(.message.usage.iterations)'</code> and points ccusage at it via
+            <code>CLAUDE_CONFIG_DIR</code>. ccusage sums top-level usage, so totals are identical on
+            unaffected data and the shim stays harmless after the upstream fix ships.
+        </p>
 
         <details>
             <summary>The <code>jq</code> reshape (one row per day × model)</summary>

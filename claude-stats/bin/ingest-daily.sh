@@ -24,6 +24,24 @@ SINCE="${1:-$(date -d '8 days ago' +%Y%m%d)}"
 CSV="${TMPDIR}/usage.csv"
 PROJ_CSV="${TMPDIR}/projects.csv"
 
+# --- Sanitized mirror (added 2026-09-16) ---------------------------------
+# ccusage 20.0.20 silently drops any entry whose usage.iterations[].model is
+# null (ccusage/ccusage#1710; Claude Code 2.1.269 wrote that on 2026-09-12).
+# Point ccusage at a mirror of the window's JSONL with `iterations` stripped.
+# ccusage sums top-level usage, so totals are byte-identical on unaffected
+# data; harmless once a fixed ccusage (>20.0.20) ships.
+SRC="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+MIRROR="${TMPDIR}/cfg"
+mkdir -p "$MIRROR/projects"
+SINCE_ISO="$(date -d "$SINCE" +%F)"   # SINCE is YYYYMMDD
+( cd "$SRC" && find . -name '*.jsonl' -newermt "$SINCE_ISO" -print0 \
+  | while IFS= read -r -d '' f; do
+      mkdir -p "$MIRROR/projects/$(dirname "$f")"
+      jq -c 'del(.message.usage.iterations)' "$f" > "$MIRROR/projects/$f" 2>/dev/null \
+        || cp "$f" "$MIRROR/projects/$f"
+    done )
+export CLAUDE_CONFIG_DIR="$MIRROR"
+
 # (1) per-(date, model) totals  — feeds daily_usage
 # ccusage v19 split agents under subcommands; top-level `daily` now aggregates
 # all agents and drops modelBreakdowns. `claude daily` preserves the legacy shape.
