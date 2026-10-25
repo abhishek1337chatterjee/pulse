@@ -3,6 +3,15 @@ function battery-stats --description "Local battery analytics — opens dashboar
     set -l duckdb "$HOME/.local/bin/duckdb"
     set -l bin "$HOME/Documents/battery-stats/bin"
 
+    set -l sub $argv[1]
+    set -l rest $argv[2..-1]
+
+    # Help first, so it still works on a fresh install with no database yet.
+    if contains -- "$sub" "" help -h --help
+        _battery_stats_help
+        return 0
+    end
+
     if not test -f "$db"
         echo "battery-stats: db not found at $db"
         echo "  run: $bin/ingest-upower.sh   (one-time backfill from /var/lib/upower)"
@@ -10,14 +19,7 @@ function battery-stats --description "Local battery analytics — opens dashboar
         return 1
     end
 
-    set -l sub $argv[1]
-    set -l rest $argv[2..-1]
-
     switch "$sub"
-        case "" "help" "-h" "--help"
-            _battery_stats_help
-            return 0
-
         case dashboard
             set -l days (count $rest); test $days -eq 0; and set days 14; or set days $rest[1]
             set -l html ("$bin/build-dashboard.sh" $days)
@@ -59,34 +61,34 @@ function battery-stats --description "Local battery analytics — opens dashboar
             "$bin/poll.sh" && echo "ok"
 
         case '*'
-            echo "unknown subcommand: $sub"
+            printf "Unknown command '%s'.\n\n" $sub
             _battery_stats_help
             return 1
     end
 end
 
 function _battery_stats_help
-    echo "battery-stats — local battery analytics (DuckDB-backed)"
-    echo
-    echo "DASHBOARD (the goal — interactive HTML in browser):"
-    echo "  battery-stats dashboard [days=14]         opens /tmp/battery-stats-dashboard.html"
-    echo "                                            (Plotly: SOT, drain, sessions,"
-    echo "                                             charging bands, hourly heatmap, health)"
-    echo
-    echo "POWERTOP (manual sudo capture, terminal display):"
-    echo "  battery-stats powertop [sec=30] [notes]   capture top energy consumers"
-    echo "  battery-stats powertop-show [run_id]      view last (or specific) run"
-    echo
-    echo "MAINTENANCE:"
-    echo "  battery-stats ingest                      backfill from /var/lib/upower/*.dat"
-    echo "  battery-stats aggregate                   rebuild sessions + daily rollup (writes only if changed)"
-    echo "  battery-stats compact                     rewrite battery.duckdb into a fresh file (reclaim dead blocks)"
-    echo "  battery-stats poll                        take one sample now (debug)"
-    echo
-    echo "BACKGROUND:"
-    echo "  systemctl --user list-timers battery-stats-*    # poll every 5 min, aggregate+compact nightly 03:15"
-    echo "  systemctl --user status battery-stats-poll      # check poller health"
-    echo
-    echo "DOCS:"
-    echo "  pulse-docs                                open the internals docs in browser"
+    # Help card data, in the pulse help order: dashboard, powertop, maintenance, background, docs.
+    set -l dashboard \
+        "battery-stats dashboard [days]" "Open the dashboard (default 14 days)"
+    set -l powertop \
+        "battery-stats powertop [sec] [note]" "Capture top energy users (sudo)" \
+        "battery-stats powertop-show [id]" "Show the last (or a given) run"
+    set -l maintenance \
+        "battery-stats ingest" "Backfill from /var/lib/upower" \
+        "battery-stats aggregate" "Rebuild sessions + daily rollup" \
+        "battery-stats compact" "Rewrite the DB, reclaim space" \
+        "battery-stats poll" "Take one sample now (debug)"
+    set -l background \
+        "Poll every 5 min; aggregate + compact nightly at 03:15." \
+        "Check: systemctl --user list-timers battery-stats-*"
+    set -l docs \
+        "pulse-docs" "Open the internals docs"
+
+    __pulse_card "battery-stats help" \
+        (__pulse_card_pairs Dashboard $dashboard) "" \
+        (__pulse_card_pairs Powertop $powertop) "" \
+        (__pulse_card_pairs Maintenance $maintenance) "" \
+        (__pulse_card_bullets Background $background) "" \
+        (__pulse_card_pairs Docs $docs)
 end

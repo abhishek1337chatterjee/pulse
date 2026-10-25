@@ -36,7 +36,7 @@ fish + Plotly HTML dashboards. Self-hosted, no telemetry.
 - **Model colors (claude-stats)**: `colorForModel(m)` in `build-dashboard.sh` keeps a per-family HSL hue (opus/sonnet/haiku) and ranks lightness by the version in the model id — newest = brightest brand shade, older dims by `MODEL_L_STEP`. Version-aware + automatic; a new model needs NO edit. Don't reintroduce a flat family→single-color map (that made `opus-4-7`/`opus-4-8` collide).
 - **Dashboard window (claude-stats)**: `build-dashboard.sh` `$1` is a window SPEC — bare int = rolling days, `month:M[:Y]` = calendar month (fish forwards it from `dashboard month M [Y]`). The spec parser computes `WIN_LO`/`WIN_HI` (half-open `[LO, HI)` SQL date literals), `WINDOW_LABEL`, `WINDOW_DAYS`, `REBUILD_HINT`; every windowed query splices `$WHERE_DATE` / `$WHERE_STARTED` / `$WHERE_CSTARTED`. Each `q()` is a separate duckdb process, so bounds are inlined per-query (no session vars). Month upper bound is first-of-next-month exclusive — handles 28/30/31 + timestamp time-of-day correctly. No DB/schema change; read-only.
 - Fish CLIs are intentionally MINIMAL — `dashboard` is the only display surface. Keep them that way. No terminal-table reports. The dashboard is strictly more informative than any tabular CLI output, so don't re-add `summary` / `sot` / `worst` etc. The only exceptions: `claude-stats raw <SQL>` (debug escape hatch) and `battery-stats powertop-show` (powertop data isn't in the dashboard yet).
-- Help layout: `DASHBOARD → POWERTOP (battery only) → MAINTENANCE → BACKGROUND → DOCS`.
+- Help layout: `DASHBOARD → POWERTOP (battery only) → MAINTENANCE → BACKGROUND → DOCS`, drawn as a box card. Help text is data lists inside `_<project>_stats_help`; draw with `fish/__pulse_card{,_pairs,_bullets}.fish` (own `__pulse_` prefix so it never clobbers another repo's `__card`). Help runs BEFORE the DB-exists check.
 - **Cost attribution (claude-stats v4)**: two tables, both written by `ingest-daily.sh`. `daily_usage` (PK `date,model`) from `ccusage claude daily --json`; `project_daily_usage` (PK `project_path,date,model`) from `ccusage claude daily --instances --breakdown --json`. **Subcommand is `claude daily`, not `daily`** — ccusage v19+ reorganized agents under per-agent subcommands; top-level `daily` aggregates all agents and drops `modelBreakdowns`, which breaks ingest with `Cannot iterate over null`. Same 8-day rolling-rewrite window — rows older than 8 days are immutable. Sums reconcile to the cent for any (date, model) where ccusage could see the JSONLs at ingest. The dashboard's "Top projects" panel windows over `project_daily_usage`; the `attribution` query computes the windowed gap. (Legacy `project_usage` table was removed — replaced by `project_daily_usage`. `ingest-sessions.py` no longer writes any cost data.)
 
 ## Tests / verification
@@ -63,3 +63,7 @@ Two-laptop disaster recovery. Original setup was scattered across
 `~/Documents/`, `~/.config/fish/functions/`, `~/.config/systemd/user/`, and
 crontab. This repo collapses them into one tree so a fresh laptop is one
 `git clone + ./install.sh` away.
+
+## Recent changes
+
+- 2026-10-25 — help output for both CLIs redrawn as box cards (`__pulse_card*`); help works without a DB

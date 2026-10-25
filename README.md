@@ -120,7 +120,8 @@ battery-stats dashboard
 ~/.config/fish/functions/
 ├── claude-stats.fish          → symlink to repo
 ├── battery-stats.fish         → symlink to repo
-└── pulse-docs.fish            → symlink to repo  (opens docs/index.html)
+├── pulse-docs.fish            → symlink to repo  (opens docs/index.html)
+└── __pulse_card*.fish         → symlinks to repo (box drawer for the help cards)
 
 ~/.config/systemd/user/
 ├── battery-stats-poll.service       → symlink to repo

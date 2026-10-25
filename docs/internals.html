@@ -161,7 +161,8 @@ systemctl --user start claude-stats-ingest.service</code></pre>
 │   │   └── battery-stats-aggregate.{service,timer}
 │   └── schema.sql
 ├── fish/
-│   └── pulse-docs.fish            <span class="tok-c"># opens docs/index.html in browser</span>
+│   ├── pulse-docs.fish            <span class="tok-c"># opens docs/index.html in browser</span>
+│   └── __pulse_card*.fish         <span class="tok-c"># box drawer for the help cards</span>
 ├── docs/
 │   ├── index.html                 <span class="tok-c"># landing (you start here)</span>
 │   ├── claude-stats.html          <span class="tok-c"># spoke 1</span>
@@ -188,7 +189,8 @@ systemctl --user start claude-stats-ingest.service</code></pre>
 ~/.config/fish/functions/
 ├── claude-stats.fish              → repo
 ├── battery-stats.fish             → repo
-└── pulse-docs.fish                → repo  (opens docs/index.html)
+├── pulse-docs.fish                → repo  (opens docs/index.html)
+└── __pulse_card*.fish             → repo  (help-card box drawer)
 
 ~/.config/systemd/user/
 ├── battery-stats-poll.{service,timer}       → repo

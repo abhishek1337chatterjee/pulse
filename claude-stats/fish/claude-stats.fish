@@ -2,20 +2,22 @@ function claude-stats --description "Local Claude Code usage analytics — opens
     set -l db "$HOME/Documents/claude-stats/claude.duckdb"
     set -l duckdb "$HOME/.local/bin/duckdb"
 
+    set -l sub $argv[1]
+    set -l rest $argv[2..-1]
+
+    # Help first, so it still works on a fresh install with no database yet.
+    if contains -- "$sub" "" help -h --help
+        _claude_stats_help
+        return 0
+    end
+
     if not test -f "$db"
         echo "claude-stats: db not found at $db"
         echo "  run ~/Documents/claude-stats/bin/ingest-daily.sh first"
         return 1
     end
 
-    set -l sub $argv[1]
-    set -l rest $argv[2..-1]
-
     switch "$sub"
-        case "" "help" "-h" "--help"
-            _claude_stats_help
-            return 0
-
         case dashboard
             # arg forms:  dashboard [days=30]  |  dashboard month M [Y]
             set -l spec
@@ -54,36 +56,31 @@ function claude-stats --description "Local Claude Code usage analytics — opens
             $duckdb "$db" "$rest"
 
         case '*'
-            echo "claude-stats: unknown subcommand '$sub'"
-            echo
+            printf "Unknown command '%s'.\n\n" $sub
             _claude_stats_help
             return 1
     end
 end
 
 function _claude_stats_help
-    echo "claude-stats — local Claude Code usage analytics (DuckDB-backed)"
-    echo
-    echo "DASHBOARD (the goal — interactive HTML in browser):"
-    echo "  claude-stats dashboard [days=30]          opens /tmp/claude-stats-dashboard.html"
-    echo "                                            (Plotly: cost, tokens, cache,"
-    echo "                                             tools, models, repos, context)"
-    echo "                                            rolling window: 30 / 90 / 365 days"
-    echo "  claude-stats dashboard month M [Y]        a calendar month (M=1-12)"
-    echo "                                            year optional; defaults to the most"
-    echo "                                            recent occurrence (limited by 365-day"
-    echo "                                            retention). e.g. dashboard month 4 2025"
-    echo
-    echo "MAINTENANCE:"
-    echo "  claude-stats ingest [SINCE]               daily ccusage ingest (SINCE=YYYYMMDD, default -8d)"
-    echo "  claude-stats ingest-sessions              JSONL session ingest (~/.claude/projects)"
-    echo "  claude-stats raw <SQL>                    run arbitrary SQL (read+write — debug only)"
-    echo
-    echo "BACKGROUND:"
-    echo "  systemd 02:00 nightly (Persistent)  →  ingest-daily + ingest-sessions + cleanup-old (365-day retention)"
-    echo "  claude-clean hook  →  ingest-sessions runs BEFORE per-project deletion"
-    echo "  DB: ~/Documents/claude-stats/claude.duckdb  (survives claude-clean)"
-    echo
-    echo "DOCS:"
-    echo "  pulse-docs                                open the internals docs in browser"
+    # Help card data, in the pulse help order: dashboard, maintenance, background, docs.
+    set -l dashboard \
+        "claude-stats dashboard [days]" "Open the dashboard (30/90/365 days)" \
+        "claude-stats dashboard month M [Y]" "One calendar month, e.g. month 4 2025"
+    set -l maintenance \
+        "claude-stats ingest [SINCE]" "Daily cost ingest (default last 8 days)" \
+        "claude-stats ingest-sessions" "Session ingest from ~/.claude/projects" \
+        "claude-stats raw <SQL>" "Run any SQL (read+write, debug only)"
+    set -l background \
+        "systemd 02:00 nightly: ingest + sessions + 365-day cleanup." \
+        "claude-clean runs ingest-sessions before it deletes sessions." \
+        "DB: ~/Documents/claude-stats/claude.duckdb (survives claude-clean)."
+    set -l docs \
+        "pulse-docs" "Open the internals docs"
+
+    __pulse_card "claude-stats help" \
+        (__pulse_card_pairs Dashboard $dashboard) "" \
+        (__pulse_card_pairs Maintenance $maintenance) "" \
+        (__pulse_card_bullets Background $background) "" \
+        (__pulse_card_pairs Docs $docs)
 end

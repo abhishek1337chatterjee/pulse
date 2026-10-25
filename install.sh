@@ -117,6 +117,10 @@ mkdir -p "$FISH_FUNCS"
 link "$REPO/claude-stats/fish/claude-stats.fish"   "$FISH_FUNCS/claude-stats.fish"
 link "$REPO/battery-stats/fish/battery-stats.fish" "$FISH_FUNCS/battery-stats.fish"
 link "$REPO/fish/pulse-docs.fish"                  "$FISH_FUNCS/pulse-docs.fish"
+# Box drawer for the help cards; __pulse_ prefix so it never replaces another repo's __card.
+for helper in __pulse_card __pulse_card_pairs __pulse_card_bullets; do
+    link "$REPO/fish/$helper.fish" "$FISH_FUNCS/$helper.fish"
+done
 
 # ---------- step 6: systemd timers (battery-stats + claude-stats) ----------
 say "6/9  Linking + enabling systemd user timers"
